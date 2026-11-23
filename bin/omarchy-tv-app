@@ -11,7 +11,8 @@
 #   omarchy-tv-app list            Running apps, one "id<TAB>unit" per line
 #
 # The scope is the container: one cgroup holding the app and everything it
-# forks, named omarchy-tv-app-<id>-<n>.scope. Closing kills the cgroup, so no
+# forks, named omarchy-tv-app-<id>-<n>.scope (omarchy-tvtest-app-... for
+# hidden test sessions). Closing kills the cgroup, so no
 # helper process is left behind; the compositor reads the scope name from
 # /proc to put the app's windows on their own fullscreen workspace. Web apps
 # also get a browser profile of their own, so logins stay with the TV and
@@ -23,6 +24,13 @@ root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/..
 state=${OMARCHY_TV_STATE:-${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-tv}
 data=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-tv
 log="$state/apps.log"
+# A hidden test session's apps are named and sliced apart from the real
+# session's, so stopping one never touches the other's apps.
+if [[ -n ${OMARCHY_TV_TEST:-} ]]; then
+  prefix=omarchy-tvtest-app slice=omarchy-tv-test.slice
+else
+  prefix=omarchy-tv-app slice=omarchy-tv.slice
+fi
 mkdir -p "$state/apps" "$data/profiles"
 
 fail() {
@@ -49,7 +57,7 @@ unit_of_pid() {
 units_for() {
   {
     systemctl --user list-units --type=scope --state=active --plain --no-legend \
-      "omarchy-tv-app-$1-*.scope" 2>/dev/null | awk '{print $1}'
+      "$prefix-$1-*.scope" 2>/dev/null | awk '{print $1}'
     local p u
     if p=$(root_pid "$1"); then
       u=$(unit_of_pid "$p")
@@ -61,7 +69,7 @@ units_for() {
 all_ids() {
   {
     systemctl --user list-units --type=scope --state=active --plain --no-legend \
-      'omarchy-tv-app-*.scope' 2>/dev/null | awk '{print $1}' | sed -E 's/^omarchy-tv-app-([a-z0-9_]+)-.*/\1/'
+      "$prefix-*.scope" 2>/dev/null | awk '{print $1}' | sed -E "s/^$prefix-([a-z0-9_]+)-.*/\\1/"
     for f in "$state"/apps/*.pid; do
       [[ -f $f ]] || continue
       id=${f##*/}
@@ -225,7 +233,7 @@ run_app() {
   mem=$(jq -r '.memoryHigh // empty' <<<"$json")
   [[ -n $mem ]] && props+=(-p "MemoryHigh=$mem")
 
-  local unit="omarchy-tv-app-$id-$(date +%s%N | tail -c 7)"
+  local unit="$prefix-$id-$(date +%s%N | tail -c 7)"
   echo "$(date +%T) run $id: ${cmd[*]}" >>"$log"
 
   # --scope keeps the caller's environment (this session's WAYLAND_DISPLAY),
@@ -235,7 +243,7 @@ run_app() {
   # The shims keep anything the app starts (terminals, uwsm-app) in the TV.
   envs+=("PATH=$root/shim:$PATH")
   setsid env -u QT_IM_MODULE -u GTK_IM_MODULE -u SDL_IM_MODULE -u XMODIFIERS "${envs[@]}" systemd-run --user --scope --quiet --collect \
-    --slice=omarchy-tv.slice --unit="$unit" "${props[@]}" \
+    --slice="$slice" --unit="$unit" "${props[@]}" \
     -- "${cmd[@]}" >>"$log" 2>&1 </dev/null &
   # setsid, env and systemd-run --scope all exec, so $! is the app itself.
   local pid=$!

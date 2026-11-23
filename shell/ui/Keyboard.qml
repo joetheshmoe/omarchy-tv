@@ -151,6 +151,7 @@ FocusScope {
             border.width: current ? Theme.px(3) : Theme.px(1)
             border.color: current ? Theme.activeBorder : Theme.alpha(Theme.foreground, 0.1)
             Text {
+              textFormat: Text.PlainText
               anchors.centerIn: parent
               text: parent.modelData.t
               font.family: Theme.font

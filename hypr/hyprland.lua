@@ -138,7 +138,8 @@ end
 local function app_for_pid(pid)
   if not pid or pid <= 0 then return nil end
   local cgroup = read_file("/proc/" .. pid .. "/cgroup")
-  local id = cgroup and cgroup:match("omarchy%-tv%-app%-([%w_]+)%-%w+%.scope")
+  -- omarchy-tv-app-<id>-<n>.scope, or omarchy-tvtest-app-... in test sessions
+  local id = cgroup and cgroup:match("omarchy%-tv%a*%-app%-([%w_]+)%-%w+%.scope")
   if id then return id end
 
   -- The app moved itself to a scope of its own (Chromium does): find it by the

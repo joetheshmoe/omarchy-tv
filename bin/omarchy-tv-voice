@@ -27,6 +27,7 @@ stop_recorder() {
   local pid
   pid=$(<"$pidfile")
   rm -f "$pidfile"
+  # The pid is timeout's; INT reaches pw-record through it.
   kill -INT "$pid" 2>/dev/null || return 1
   for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
   kill -KILL "$pid" 2>/dev/null || true
@@ -46,7 +47,7 @@ start)
   stop_recorder || true
   if [[ -n ${OMARCHY_TV_DEMO:-} && -f ${OMARCHY_TV_DEMO_VOICE:-} ]]; then
     # Demo recordings: a scripted request stands in for the microphone.
-    sleep 600 &
+    sleep 60 &
     echo $! >"$pidfile"
     jq -cn '{recording: true, demo: true}'
     exit 0
@@ -54,7 +55,8 @@ start)
   command -v pw-record >/dev/null || { json_error "pw-record is missing (pipewire)"; exit 1; }
   rm -f "$wav"
   # 16 kHz mono is what speech models eat; no resampling later.
-  setsid pw-record --rate 16000 --channels 1 --format s16 "$wav" >/dev/null 2>&1 &
+  # Never longer than a minute, whatever happens to the shell that asked.
+  setsid timeout 60 pw-record --rate 16000 --channels 1 --format s16 "$wav" >/dev/null 2>&1 &
   echo $! >"$pidfile"
   jq -cn '{recording: true}'
   ;;

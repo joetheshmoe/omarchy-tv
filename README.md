@@ -273,8 +273,8 @@ on the desktop. Home rechecks what is installed when an install finishes.
 
 **Swap the agent.** *Settings › Assistant*:
 - *The TV assistant answers with* chooses which agent answers quick questions, or follows
-  Omarchy's default. Agents that can answer in one go: Claude, Codex, OpenCode, Crush,
-  Copilot, Cursor CLI, Qwen, Gemini, Pi, Amp.
+  Omarchy's default. Only agents that can be made unable to change anything can answer:
+  Claude (all tools disabled), Pi (`--no-tools`) and Codex (read-only sandbox).
 - *Omarchy's default agent* lists every installed harness from Omarchy's menu and sets the
   default system-wide (`omarchy-default-agent`). The *Agent* tile opens that one, full
   screen.

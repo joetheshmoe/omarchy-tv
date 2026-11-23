@@ -19,6 +19,8 @@ while true; do
   started=$(date +%s)
   qs -p "$root/shell" >>"$state/shell.log" 2>&1
   status=$?
+  # The shell is gone, so nothing shows a recording indicator: stop any.
+  "$root/bin/omarchy-tv-voice" cancel >/dev/null 2>&1
   # A clean exit (session ending) stops here.
   [[ $status -eq 0 ]] && exit 0
   [[ -S ${XDG_RUNTIME_DIR}/hypr/${HYPRLAND_INSTANCE_SIGNATURE}/.socket.sock ]] || exit 0

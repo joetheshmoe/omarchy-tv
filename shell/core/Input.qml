@@ -27,8 +27,10 @@ Singleton {
   property bool imeActive: false
   property int imePurpose: 0
 
+  property string keyboardApp: "" // the app the keyboard types into
   function showKeyboard(target, secret) {
     keyboardTarget = target || "app"
+    keyboardApp = Tv.frontApp || Tv.lastApp
     keyboardSecret = !!secret
     keyboardInitial = ""
     keyboardShown = true
@@ -52,7 +54,7 @@ Singleton {
     hideKeyboard()
     if (!text.length && !submit) return
     if (target === "assistant") { Assistant.ask(text); return }
-    sendToApp(text, submit)
+    sendToApp(text, submit, keyboardApp)
   }
 
   // Type into the app in front. Prefer the input method (exact Unicode, into
@@ -61,16 +63,28 @@ Singleton {
   // goes, so wait for that first.
   property string pendingText: ""
   property bool pendingSubmit: false
-  function sendToApp(text, submit) {
+  property string pendingApp: ""
+  // `forApp`: the app the text was meant for. If a different app (or an
+  // overlay) is in front by the time it's ready, nothing is typed.
+  function sendToApp(text, submit, forApp) {
     pendingText = text
     pendingSubmit = !!submit
+    pendingApp = forApp || ""
     sendTimer.restart()
+  }
+  function stillFor(app) {
+    return !!app && Tv.frontApp === app && !Tv.homeShown && !Tv.guideShown && !Tv.assistantShown && !keyboardShown
   }
   Timer {
     id: sendTimer
     interval: 350
     onTriggered: {
       var text = root.pendingText
+      if (!root.stillFor(root.pendingApp)) {
+        if (text.length) Tv.toast("Not typed: " + Tv.appFor(root.pendingApp).name + " is no longer in front", "warn")
+        root.pendingText = ""
+        return
+      }
       if (text.length) {
         if (root.imeActive && ime.running) {
           ime.write("commit " + text.replace(/\\/g, "\\\\").replace(/\n/g, "\\n") + "\n")
@@ -78,11 +92,12 @@ Singleton {
           Quickshell.execDetached(["wtype", "--", text])
         }
       }
-      if (root.pendingSubmit) enterTimer.restart()
+      if (root.pendingSubmit) { root.enterApp = root.pendingApp; enterTimer.restart() }
       root.pendingText = ""
     }
   }
-  Timer { id: enterTimer; interval: 150; onTriggered: Quickshell.execDetached(["wtype", "-k", "Return"]) }
+  property string enterApp: ""
+  Timer { id: enterTimer; interval: 150; onTriggered: if (root.stillFor(root.enterApp)) Quickshell.execDetached(["wtype", "-k", "Return"]) }
 
   // Pop the keyboard up when a field gains focus in the app in front (not
   // right after the viewer dismissed it, and not for controller games).
@@ -169,10 +184,15 @@ Singleton {
   property bool talking: false
   property bool transcribing: false
   property string talkTarget: "app" // app | keyboard | assistant
+  property string talkApp: ""       // the app in front when talking started
   property real talkStartedAt: 0
   property bool talkHeld: false
   property bool voiceAvailable: false
   signal heard(string text, string target)
+
+  // A recorder left over from a shell that crashed mid-recording is stopped
+  // as soon as the shell comes back.
+  Component.onCompleted: Quickshell.execDetached([Tv.tvRoot + "/bin/omarchy-tv-voice", "cancel"])
 
   Process {
     id: voiceCheck
@@ -199,6 +219,7 @@ Singleton {
     if (talking || transcribing) return
     talkTarget = target || (keyboardShown ? "keyboard" : Tv.assistantShown ? "assistant" : (Tv.frontApp && !Tv.homeShown && !Tv.guideShown) ? "app" : "assistant")
     talking = true
+    talkApp = Tv.frontApp
     talkStartedAt = Date.now()
     Quickshell.execDetached([Tv.tvRoot + "/bin/omarchy-tv-voice", "start"])
   }
@@ -236,6 +257,6 @@ Singleton {
     heard(said, target)
     if (target === "keyboard") return // the keyboard listens to heard()
     if (target === "assistant") { Assistant.show(); Assistant.ask(said); return }
-    sendToApp(said, false)
+    sendToApp(said, false, talkApp)
   }
 }

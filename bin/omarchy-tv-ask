@@ -8,9 +8,10 @@
 #   omarchy-tv-ask "question"     Answer on stdout (plain text)
 #
 # The agent is $OMARCHY_TV_AGENT when set (TV Settings > Assistant), else
-# Omarchy's default agent (`omarchy default agent`), when it can run headless;
-# otherwise the first installed one that can. It runs read-only in its own
-# scratch folder: it answers, it doesn't act. To change the TV it ends its
+# Omarchy's default agent (`omarchy default agent`) when it is one listed in
+# `supported`; otherwise the first installed one that is. It runs with no
+# tools (or a read-only sandbox) in its own scratch folder: it answers, it
+# can't act. To change the TV it ends its
 # answer with a "TV:" line, which the TV checks against a short list of safe
 # commands before doing anything.
 
@@ -20,8 +21,11 @@ root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/..
 work=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-tv/assistant
 mkdir -p "$work"
 
-# Agents that can answer one question and exit (print mode).
-supported=(claude codex opencode crush copilot cursor-agent qwen gemini pi amp)
+# Agents that can answer one question and exit while being unable to change
+# anything: each runs with its tools disabled or in a read-only sandbox (see
+# the case below). Agents without such a mode can't be the TV assistant; they
+# still work as Omarchy's default agent in the (interactive) Agent tile.
+supported=(claude pi codex)
 
 headless() { printf '%s\n' "${supported[@]}" | grep -qx "$1"; }
 usable() { [[ -n $1 ]] && headless "$1" && command -v "$1" >/dev/null; }
@@ -86,9 +90,14 @@ exec </dev/null
 t="timeout 120"
 case $agent in
 claude)
-  exec $t claude -p --output-format text --permission-mode plan "$prompt" 2>/dev/null
+  # No tools at all: it can only answer.
+  exec $t claude -p --output-format text --tools "" --permission-mode plan "$prompt" 2>/dev/null
+  ;;
+pi)
+  exec $t pi -p --no-session --no-tools "$prompt" 2>/dev/null
   ;;
 codex)
+  # Read-only sandbox: commands it runs can't write anywhere.
   out=$(mktemp)
   $t codex exec --skip-git-repo-check --sandbox read-only -o "$out" "$prompt" >/dev/null 2>&1
   status=$?
@@ -96,12 +105,4 @@ codex)
   rm -f "$out"
   exit $status
   ;;
-opencode) exec $t opencode run "$prompt" 2>/dev/null ;;
-crush) exec $t crush run "$prompt" 2>/dev/null ;;
-copilot) exec $t copilot -p "$prompt" 2>/dev/null ;;
-cursor-agent) exec $t cursor-agent -p --output-format text "$prompt" 2>/dev/null ;;
-qwen) exec $t qwen -p "$prompt" 2>/dev/null ;;
-gemini) exec $t gemini -p "$prompt" 2>/dev/null ;;
-pi) exec $t pi -p --no-session --no-tools "$prompt" 2>/dev/null ;;
-amp) exec $t amp -x "$prompt" 2>/dev/null ;;
 esac
