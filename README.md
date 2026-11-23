@@ -49,6 +49,22 @@ omarchy-tv              # start (or bring back) the TV
 omarchy-tv stop         # close every TV app, then the TV
 ```
 
+### Remove
+
+```
+omarchy-tv stop                        # if it's running
+omarchy-tv autostart sync              # after turning off "open at login/after sleep", or:
+systemctl --user disable --now omarchy-tv-autostart.service
+omarchy plugin remove joetheshmoe.tv   # if installed as an extension
+./install.sh --remove                  # if installed from a checkout (launcher, PATH link, Super+Alt+T)
+```
+
+Your settings, added apps and web-app logins stay in `~/.config/omarchy-tv` and
+`~/.local/share/omarchy-tv`. Delete those folders (and `~/.cache/omarchy-tv`) to remove every
+trace.
+
+### Requirements
+
 Omarchy TV requires Omarchy Control (`omarchy pkg add omarchy-control`; `install.sh` installs
 it for you). Web apps need Chromium or Chrome, local media needs mpv, and voice needs
 Superwhisper. The first launch walks you through it all.
