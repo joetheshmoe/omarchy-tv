@@ -612,13 +612,19 @@ Singleton {
   property bool osdShown: false
   property string osdKind: "volume"
 
+  // Hidden test and demo sessions share the desktop's audio; they show the
+  // OSD but never change the real volume, mute or output.
+  readonly property bool audioLocked: !!Quickshell.env("OMARCHY_TV_TEST")
+
   function changeVolume(delta) {
+    if (audioLocked) { flashOsd("volume"); return }
     if (!sink || !sink.audio) return
     sink.audio.muted = false
     sink.audio.volume = Math.max(0, Math.min(1.0, Math.round((sink.audio.volume + delta) * 100) / 100))
     flashOsd("volume")
   }
   function toggleMute() {
+    if (audioLocked) { flashOsd("volume"); return }
     if (!sink || !sink.audio) return
     sink.audio.muted = !sink.audio.muted
     flashOsd("volume")
@@ -627,7 +633,7 @@ Singleton {
   Timer { id: osdTimer; interval: 1400; onTriggered: root.osdShown = false }
 
   readonly property var sinks: Pipewire.nodes.values.filter(function(n) { return n.isSink && !n.isStream && n.audio })
-  function setSink(node) { Pipewire.preferredDefaultAudioSink = node; flashOsd("output") }
+  function setSink(node) { if (!audioLocked) Pipewire.preferredDefaultAudioSink = node; flashOsd("output") }
 
   // ---------------------------------------------------------------- media
   // Players are matched to an app by pid (Chromium names its MPRIS bus after

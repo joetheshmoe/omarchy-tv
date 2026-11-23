@@ -9,7 +9,7 @@ back, it's one button away.
 
 ![Omarchy TV demo](docs/demo.gif)
 
-<sub>Sped up 1.6×. **▶ Watch it with sound:** [docs/demo.mp4](docs/demo.mp4) (real time, original soundtrack)</sub>
+<sub>**▶ Watch it with sound:** [docs/demo.mp4](docs/demo.mp4) (60 fps, original soundtrack)</sub>
 
 - **Console-grade navigation.** Big tiles, a guide button, and every app full screen. Works
   with any controller, TV remote, phone remote app or keyboard.
@@ -300,12 +300,20 @@ full screen at 1.5× with mouse mode on.
 
 ## Demo
 
-`tools/demo.sh` records the demo above. It drives a hidden session with scripted presses,
-records it with wf-recorder and captions it with ffmpeg. The soundtrack is built by
-`tools/demo-audio.py`: an original synthesized synthwave bed, plus every interface sound the
-TV played, placed at the moment it played (the shell logs them in demo mode), with swooshes
-on caption changes. The demo session itself is silent, and your desktop audio is never
-recorded.
+`tools/demo.sh` records the demo above. It drives a hidden session with scripted remote
+presses, records it at 60 fps with wf-recorder, and hands the result to
+`tools/demo-edit.py`. That script cuts the scenes on the beat of the soundtrack, speeds up
+any waiting, and adds title cards and lower-third captions. The soundtrack (built in
+`tools/demo_audio.py`) is an original synthwave track. It includes every interface sound
+the TV played and the spoken request, which Piper TTS synthesizes and Superwhisper really
+transcribes.
+
+The demo session plays app audio into a silent sink. It shows a demo theme without
+touching yours, and it can't change your system volume.
+
+```
+PIPER=/path/to/piper PIPER_VOICE=/path/to/voice.onnx tools/demo.sh
+```
 
 ## Testing without seeing it
 

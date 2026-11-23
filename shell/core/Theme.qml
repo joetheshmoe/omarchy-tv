@@ -9,8 +9,11 @@ Singleton {
   id: root
 
   readonly property string home: Quickshell.env("HOME")
-  readonly property string themeDir: home + "/.local/state/omarchy/current/theme"
-  readonly property string backgroundPath: home + "/.local/state/omarchy/current/background"
+  // Demo recordings can point these elsewhere, to show live theming without
+  // touching the desktop's theme.
+  readonly property string themeDir: Quickshell.env("OMARCHY_TV_THEME_DIR") || (home + "/.local/state/omarchy/current/theme")
+  readonly property string backgroundPath: Quickshell.env("OMARCHY_TV_BACKGROUND") || (home + "/.local/state/omarchy/current/background")
+  readonly property string generationPath: Quickshell.env("OMARCHY_TV_THEME_GEN") || (home + "/.local/state/omarchy/current/theme.generation")
 
   // Design units: the UI is laid out for 1920x1080 and multiplied by `s`.
   // `zoom` is the user's TV text/UI size, `safe` the overscan margin.
@@ -121,6 +124,8 @@ Singleton {
     printErrors: false
     onFileChanged: reload()
     onLoaded: root.parseShell(text())
+    // Themes that ship no shell.toml: the borders follow the accent.
+    onLoadFailed: { root.activeBorder = root.accent; root.popupBorder = root.accent }
   }
 
   Process {
@@ -141,7 +146,7 @@ Singleton {
   // A theme switch swaps the whole directory; Omarchy bumps this file when it
   // does, which catches the swap even when the old watch went with the files.
   FileView {
-    path: root.home + "/.local/state/omarchy/current/theme.generation"
+    path: root.generationPath
     watchChanges: true
     onFileChanged: { reload(); colorsFile.reload(); shellFile.reload(); fontProc.running = true; roundingProc.running = true }
   }

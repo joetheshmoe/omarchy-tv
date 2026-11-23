@@ -1,171 +1,210 @@
 #!/bin/bash
 
-# Record the README demo: drives a hidden Omarchy TV session with scripted
-# remote presses, records its 1080p headless output, then captions it.
+# Record and edit the README demo.
 #
-#   tools/demo.sh [out-dir]     writes demo.mp4 and demo.gif (default: docs/)
+#   tools/demo.sh [out-dir]       writes demo.mp4 (60 fps, with sound) and demo.gif
 #
-# Needs wf-recorder and ffmpeg. Uses your real TV settings and Omarchy theme;
-# your settings.json is restored afterwards.
+# 1. Starts a hidden Omarchy TV session (headless 1080p output) in demo mode:
+#    app audio goes to a silent sink, the TV's own sounds are logged instead of
+#    played, the desktop's now-playing is hidden, and the theme comes from a
+#    demo folder so it can change live without touching your desktop.
+# 2. Plays a scripted tour with remote presses, recording at 60 fps, and marks
+#    where each scene starts and ends.
+# 3. tools/demo-edit.py cuts the scenes together on the music's beat, speeds
+#    up waiting, adds captions and title cards, and builds the soundtrack: an
+#    original synthwave bed, every interface sound where it played, and the
+#    spoken request (Piper TTS) where the "user" spoke it.
+#
+# Needs: wf-recorder, ffmpeg, python3 + numpy, Piper TTS (PIPER, PIPER_VOICE).
 
 set -uo pipefail
 root=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 out=${1:-$root/docs}
 work=$(mktemp -d)
 mkdir -p "$out"
-export OMARCHY_TV_TEST=1 OMARCHY_TV_DEMO=1
 tv="$root/bin/omarchy-tv"
 settings=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-tv/settings.json
-cp "$settings" "$work/settings.json" 2>/dev/null || true
-trap 'cp "$work/settings.json" "$settings" 2>/dev/null; "$tv" stop >/dev/null 2>&1; rm -rf "$work"' EXIT
+piper=${PIPER:-piper}
+voice=${PIPER_VOICE:?set PIPER_VOICE to a Piper .onnx voice}
 
-# Fresh look for the recording: default layout, tutorial on.
-jq '.tutorialDone = false | .agent = "claude" | .sounds = "retro" | .soundVolume = 0.7 | del(.layout)' "$work/settings.json" >"$settings" 2>/dev/null || echo '{}' >"$settings"
+export OMARCHY_TV_TEST=1 OMARCHY_TV_DEMO=1
+cp "$settings" "$work/settings.json" 2>/dev/null || echo '{}' >"$work/settings.json"
+
+# A silent sink for app audio (YouTube, games).
+sinkmod=$(pactl load-module module-null-sink sink_name=omarchy_tv_demo sink_properties=device.description=OmarchyTVDemo)
+export PULSE_SINK=omarchy_tv_demo
+
+cleanup() {
+  cp "$work/settings.json" "$settings" 2>/dev/null
+  "$tv" stop >/dev/null 2>&1
+  pactl unload-module "$sinkmod" 2>/dev/null
+  [[ -n ${DEMO_KEEP:-} ]] && cp -r "$work/." "$DEMO_KEEP/" 2>/dev/null
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# Demo theme, switchable live.
+mkdir -p "$work/theme-link"
+settheme() {
+  ln -sfn "/usr/share/omarchy/themes/$1" "$work/theme-link/theme"
+  ln -sfn "$(ls -d "/usr/share/omarchy/themes/$1/backgrounds/"* | head -1)" "$work/theme-link/background"
+  date +%s%N >"$work/theme-link/gen"
+}
+settheme tokyo-night
+export OMARCHY_TV_THEME_DIR=$work/theme-link/theme OMARCHY_TV_BACKGROUND=$work/theme-link/background OMARCHY_TV_THEME_GEN=$work/theme-link/gen
+
+# The spoken request.
+echo "Hey, put on some chill synthwave music." | "$piper" -m "$voice" -f "$work/voice.wav" 2>/dev/null
+export OMARCHY_TV_DEMO_VOICE=$work/voice.wav
+
+# Fresh look: default layout, tutorial on, Claude answers, Retro sounds.
+jq '.tutorialDone = false | .agent = "claude" | .sounds = "retro" | .soundVolume = 0.7 | del(.layout)' \
+  "$work/settings.json" >"$settings"
 
 "$tv" stop >/dev/null 2>&1
 "$tv" test >/dev/null || exit 1
-sleep 6
+sleep 7
 source "${XDG_RUNTIME_DIR}/omarchy-tv-test/session.env"
 export WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
-ipc() { qs ipc --pid "$(pgrep -f "[q]s -p $root/shell" | head -1)" call tv "$@" >/dev/null; }
-key() { for k in "$@"; do wtype -k "$k"; sleep "${GAP:-0.55}"; done; }
+qspid() { pgrep -f "[q]s -p $root/shell" | head -1; }
+ipc() { qs ipc --pid "$(qspid)" call tv "$@" >/dev/null; }
+state() { qs ipc --pid "$(qspid)" call tv state; }
+key() { for k in "$@"; do wtype -k "$k"; sleep "${GAP:-0.4}"; done; }
 global() { hyprctl dispatch "hl.dsp.global(\"omarchy-tv:$1\")" >/dev/null; }
+waitfor() { for _ in $(seq 1 "${2:-80}"); do state | grep -q "$1" && return 0; sleep 0.25; done; return 1; }
 
-# Everything is timed from the moment recording starts, so captions and the
-# interface sounds (logged by the shell in demo mode) land on the right frame.
 rec0=$(date +%s.%N)
-caption() { echo "$(echo "$(date +%s.%N) - $rec0" | bc) $*" >>"$work/captions"; }
+now() { echo "$(date +%s.%N) - $rec0" | bc; }
+mark() { echo "$(now) $*" >>"$work/marks"; }
+begin() { mark begin "$@"; } # begin <caption>
+speed() { mark speed "$1"; }  # play what follows at this speed
+end() { mark end; }
 
-wf-recorder -o TV-HEADLESS --no-damage -r 30 -c libx264 -p crf=18 -p preset=veryfast -f "$work/raw.mp4" >/dev/null 2>&1 &
+wf-recorder -o TV-HEADLESS --no-damage -r 60 -c h264_vaapi -d "${DEMO_RENDER_NODE:-/dev/dri/renderD129}" -f "$work/raw.mp4" >"$work/wf.log" 2>&1 &
 rec=$!
 sleep 1.5
 
-sleep 2.5
-caption "Your PC, now a living-room console"
-sleep 2
-key Right
-sleep 1.6
-key Menu # skip the rest of the tutorial
+# --- 1. Home ------------------------------------------------------------------
+begin "Your PC, now a living-room console"
 sleep 1.2
-
-caption "Couch-first: remote, controller or keyboard"
-GAP=0.45 key Right Right Right Down Right Down Down Up Up Up
-sleep 0.8
-
-caption "Every app full screen, in its own container"
-ipc open vibes
-sleep 5.5
-GAP=0.7 key Right Right Left
-sleep 0.8
-
-caption "Home brings up the guide: switch, close, force quit"
-global home
-sleep 2.2
-GAP=0.5 key Down Down Down Up Up Up
+key Menu # skip the tutorial
 sleep 0.6
-key Down Return # Home
-sleep 1.6
+GAP=0.32 key Right Right Right Down Right Right Down Up Up Left Left
+sleep 0.4
+end
 
-caption "Retro music, radio and Spotify in cliamp"
-ipc open cliamp
-sleep 3.5
-GAP=0.4 key Down Down Down
-sleep 1.2
-global close
-sleep 2
-
-caption "Ask your Omarchy agent. Out loud."
-ipc ask "Recommend one cozy movie for tonight, in two sentences."
-for _ in $(seq 1 60); do
-  sleep 0.5
-  qs ipc --pid "$(pgrep -f "[q]s -p $root/shell" | head -1)" call tv state | grep -q '"busy":false' && break
-done
-sleep 4
-key Escape
-sleep 0.8
-
-caption "A keyboard that shows up when you need it"
-global keyboard
-sleep 1
-# Spell "lofi" on the on-screen keyboard, the way a remote does.
-GAP=0.22 key Down Right Right Right Right Right Right Right Right
-key Return
-GAP=0.3 key Up Return
-GAP=0.22 key Down Left Left Left Left Left
-key Return
-GAP=0.22 key Up Right Right Right Right
-key Return
-sleep 1.2
-key Escape
-sleep 0.8
-
-caption "Make it yours: move anything, add anything"
-key Down Menu
-sleep 1
-key Down Return # Move
-sleep 0.6
-GAP=0.6 key Right Right Down
-sleep 0.6
-key Return
-sleep 1
-
-caption "Omarchy's install menu and Control, from the couch"
-ipc open install
-sleep 1.8
-GAP=0.45 key Down Down Down Down Down Down Return
-sleep 2
-key Escape Escape
-sleep 0.6
-ipc open settings
-sleep 1.2
-GAP=0.35 key Down Down Down Down Down Down Down Down Right
+# --- 2. Voice → agent → YouTube -----------------------------------------------
+begin "Just say what you want"
+global talk
+mark voice
 sleep 2.4
-key Escape Escape
-sleep 1
+global talk
+speed 3 # transcribing and thinking
+waitfor '"busy":false,"voice"' 120
+waitfor '"answer":"[^"]' 40
+speed 1
+sleep 2.6 # read the reply; the TV acts on it
+speed 2.5 # YouTube loading
+waitfor '"front":"youtube"' 120
+sleep 6
+speed 1
+# Browse the results (playing one would hit YouTube's sign-in check).
+GAP=0.55 key Right Right Down Right Left Up
+sleep 0.8
+end
 
-caption "Omarchy TV"
+# --- 3. Guide ------------------------------------------------------------------
+begin "Home opens the guide: switch, close, force quit"
+global home
+sleep 1
+GAP=0.4 key Down Down Down Up # Home, Close, Force quit, back to Close
+sleep 0.5
+key Return # Close YouTube
+sleep 1.6
+end
+
+# --- 4. Game Vibes ------------------------------------------------------------
+begin "Omarchy's Game Vibes, built in"
+ipc open vibes
+speed 2.5
+waitfor '"front":"vibes"' 80
 sleep 3
+speed 1
+GAP=0.5 key Right Right Right
+sleep 0.6
+global close
+sleep 1.2
+end
+
+# --- 5. Live theme ------------------------------------------------------------
+begin "It wears your Omarchy theme. Live."
+sleep 0.6
+for t in catppuccin gruvbox retro-82 rose-pine tokyo-night; do
+  settheme "$t"
+  sleep 1.11
+done
+end
+
+# --- 6. Sounds ----------------------------------------------------------------
+begin "Pick a sound pack. Or none at all."
+ipc open settings
+waitfor '"screen":"settings"' 40
+sleep 1.2
+GAP=0.45 key Right Down Down
+sleep 0.4
+GAP=0.95 key Right Right Right Right
+sleep 0.3
+end
+
+# --- 7. Move ------------------------------------------------------------------
+begin "Move anything. Add anything."
+GAP=0.3 key Escape Escape
+sleep 0.4
+key Menu
+sleep 0.6
+key Down Return # Move
+sleep 0.3
+GAP=0.55 key Right Right Down
+sleep 0.4
+key Return
+sleep 0.8
+end
+
+# --- 8. Keyboard --------------------------------------------------------------
+begin "A keyboard that shows up when you need it"
+global keyboard
+sleep 0.8
+speed 1.6
+# o m a r c h y, spelled with the remote
+GAP=0.12 key Right Right Right Right Right Right Right Right; key Return
+GAP=0.12 key Down Down Left Left; key Return
+GAP=0.12 key Up Left Left Left Left Left Left; key Return
+GAP=0.12 key Up Right Right Right; key Return
+GAP=0.12 key Down Down Left; key Return
+GAP=0.12 key Up Right Right Right; key Return
+GAP=0.12 key Up; key Return
+speed 1
+sleep 1.4
+key Escape
+sleep 0.4
+end
+
+# --- 9. Install + Control -----------------------------------------------------
+begin "Omarchy's install menu and Control, from the couch"
+ipc open install
+sleep 1.4
+GAP=0.3 key Down Down Down Down Down Down
+key Return
+sleep 1.6
+key Escape Escape
+sleep 0.4
+end
+
+sleep 0.5
 kill -INT "$rec"
 wait "$rec" 2>/dev/null
 cp "${XDG_RUNTIME_DIR}/omarchy-tv-test/sfx.log" "$work/sfx.log" 2>/dev/null || : >"$work/sfx.log"
-[[ -n ${DEMO_KEEP:-} ]] && { cp "$work/raw.mp4" "$work/captions" "$work/sfx.log" "$DEMO_KEEP/"; echo "$rec0" >"$DEMO_KEEP/rec0"; }
+echo "$rec0" >"$work/rec0"
 
-# Captions: a bar along the bottom, Omarchy's font, the theme's colors.
-font=$(fc-match -f '%{file}' "monospace:bold")
-fg=$(sed -n 's/^bright_foreground *= *"#\(.*\)"/\1/p' ~/.local/state/omarchy/current/theme/colors.toml)
-accent=$(sed -n 's/^accent *= *"#\(.*\)"/\1/p' ~/.local/state/omarchy/current/theme/colors.toml)
-bg=$(sed -n 's/^background *= *"#\(.*\)"/\1/p' ~/.local/state/omarchy/current/theme/colors.toml)
-filters=()
-mapfile -t lines <"$work/captions"
-for i in "${!lines[@]}"; do
-  t=${lines[$i]%% *}
-  text=${lines[$i]#* }
-  next=${lines[$((i + 1))]:-}
-  next=${next%% *}
-  [[ -z $next ]] && next=999
-  printf '%s' "$text" >"$work/cap$i.txt"
-  size=44; [[ $text == "Omarchy TV" ]] && size=96
-  y="h-150"; [[ $text == "Omarchy TV" ]] && y="(h-text_h)/2"
-  box="box=1:boxcolor=0x${bg}@0.88:boxborderw=28"
-  # Each caption fades in and out over a quarter second.
-  fade="alpha='if(lt(t,$t+0.25),(t-$t)/0.25,if(gt(t,$next-0.25),max(0,($next-t)/0.25),1))'"
-  filters+=("drawtext=fontfile=$font:textfile=$work/cap$i.txt:fontsize=$size:fontcolor=0x${fg}:$box:x=(w-text_w)/2:y=$y:$fade:enable='between(t,$t,$next)'")
-done
-# Opening title over the first seconds.
-printf 'OMARCHY TV' >"$work/title.txt"
-printf 'turn any PC into a living-room console' >"$work/subtitle.txt"
-titlefade="alpha='if(lt(t,0.3),t/0.3,if(gt(t,2.6),max(0,(3.0-t)/0.4),1))'"
-filters+=("drawbox=x=0:y=0:w=iw:h=ih:color=0x${bg}@0.82:t=fill:enable='lt(t,3.0)'")
-filters+=("drawtext=fontfile=$font:textfile=$work/title.txt:fontsize=140:fontcolor=0x${accent}:x=(w-text_w)/2:y=(h-text_h)/2-60:$titlefade:enable='lt(t,3.0)'")
-filters+=("drawtext=fontfile=$font:textfile=$work/subtitle.txt:fontsize=46:fontcolor=0x${fg}:x=(w-text_w)/2:y=(h)/2+70:$titlefade:enable='lt(t,3.0)'")
-vf=$(IFS=,; echo "${filters[*]}")
-ffmpeg -y -loglevel error -i "$work/raw.mp4" -vf "$vf" -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p "$work/video.mp4"
-
-# Soundtrack: original synthwave bed + the interface sounds + swooshes.
-duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/video.mp4")
-rec0_ms=$(echo "$rec0 * 1000" | bc)
-python3 -I "$root/tools/demo-audio.py" "$work/sfx.log" "$rec0_ms" "$work/captions" "$duration" "$work/audio.wav" "$root"
-ffmpeg -y -loglevel error -i "$work/video.mp4" -i "$work/audio.wav" -c:v copy -c:a aac -b:a 160k -shortest -movflags +faststart "$out/demo.mp4"
-# The README GIF: 1.6x speed, 720p, 10 fps, so it stays under ~10 MB.
-ffmpeg -y -loglevel error -i "$out/demo.mp4" -vf "setpts=PTS/1.6,fps=10,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" "$out/demo.gif"
+python3 -I "$root/tools/demo-edit.py" "$work" "$root" "$out"
 ls -la "$out/demo.mp4" "$out/demo.gif"

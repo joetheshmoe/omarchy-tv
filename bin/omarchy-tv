@@ -71,6 +71,12 @@ start_session() {
 
   local cmd
   cmd="env OMARCHY_TV_ROOT=$(printf %q "$root") OMARCHY_TV_STATE=$(printf %q "$state") OMARCHY_TV_HEADLESS=$headless OMARCHY_TV_TEST=${OMARCHY_TV_TEST:-} OMARCHY_TV_DEMO=${OMARCHY_TV_DEMO:-}"
+  # Demo recordings only: a scripted voice, a silent audio sink, a theme.
+  if [[ -n ${OMARCHY_TV_DEMO:-} ]]; then
+    for v in OMARCHY_TV_DEMO_VOICE PULSE_SINK OMARCHY_TV_THEME_DIR OMARCHY_TV_BACKGROUND OMARCHY_TV_THEME_GEN; do
+      [[ -n ${!v:-} ]] && cmd+=" $v=$(printf %q "${!v}")"
+    done
+  fi
   cmd+=" systemd-run --user --scope --quiet --collect --slice=omarchy-tv.slice --unit=$unit"
   cmd+=" -p CPUWeight=200 -p IOWeight=200"
   cmd+=" Hyprland -c $(printf %q "$root/hypr/hyprland.lua")"

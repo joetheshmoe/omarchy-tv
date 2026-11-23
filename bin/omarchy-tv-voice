@@ -44,6 +44,13 @@ check)
   ;;
 start)
   stop_recorder || true
+  if [[ -n ${OMARCHY_TV_DEMO:-} && -f ${OMARCHY_TV_DEMO_VOICE:-} ]]; then
+    # Demo recordings: a scripted request stands in for the microphone.
+    sleep 600 &
+    echo $! >"$pidfile"
+    jq -cn '{recording: true, demo: true}'
+    exit 0
+  fi
   command -v pw-record >/dev/null || { json_error "pw-record is missing (pipewire)"; exit 1; }
   rm -f "$wav"
   # 16 kHz mono is what speech models eat; no resampling later.
@@ -58,6 +65,9 @@ cancel)
   ;;
 stop)
   stop_recorder || { json_error "Not recording"; exit 0; }
+  if [[ -n ${OMARCHY_TV_DEMO:-} && -f ${OMARCHY_TV_DEMO_VOICE:-} ]]; then
+    ffmpeg -y -loglevel error -i "$OMARCHY_TV_DEMO_VOICE" -ar 16000 -ac 1 "$wav"
+  fi
   [[ -s $wav ]] || { json_error "Nothing was recorded"; exit 0; }
   command -v superwhisper >/dev/null || { json_error "Superwhisper is not installed"; exit 0; }
 

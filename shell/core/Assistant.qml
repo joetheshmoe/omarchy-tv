@@ -108,13 +108,13 @@ Singleton {
       var yt = Tv.appIndex["youtube"]
       if (!yt) { Tv.toast("YouTube isn't set up"); return }
       hide()
-      Tv.openWithUrl(yt, "https://www.youtube.com/tv#/results?search_query=" + encodeURIComponent(m[1]))
+      Tv.openWithUrl(yt, "https://www.youtube.com/tv#/search?q=" + encodeURIComponent(m[1]))
     } else if (/^close$/i.test(cmd)) {
       hide(); Tv.closeApp(Tv.lastApp || Tv.focusedApp, false)
     } else if (/^home$/i.test(cmd)) {
       hide(); Tv.goHome()
     } else if ((m = cmd.match(/^volume\s+(\d{1,3})$/i))) {
-      if (Tv.sink && Tv.sink.audio) { Tv.sink.audio.muted = false; Tv.sink.audio.volume = Math.min(100, parseInt(m[1])) / 100; Tv.flashOsd("volume") }
+      if (Tv.sink && Tv.sink.audio && !Tv.audioLocked) { Tv.sink.audio.muted = false; Tv.sink.audio.volume = Math.min(100, parseInt(m[1])) / 100; Tv.flashOsd("volume") }
     } else if (/^settings$/i.test(cmd)) {
       hide(); Tv.show("settings")
     } else {
