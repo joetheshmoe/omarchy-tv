@@ -1,0 +1,22 @@
+module qs.ui
+Glyph 1.0 Glyph.qml
+Label 1.0 Label.qml
+Tile 1.0 Tile.qml
+TileRow 1.0 TileRow.qml
+TopBar 1.0 TopBar.qml
+HomeScreen 1.0 HomeScreen.qml
+Splash 1.0 Splash.qml
+MenuList 1.0 MenuList.qml
+SettingsScreen 1.0 SettingsScreen.qml
+PowerScreen 1.0 PowerScreen.qml
+AllAppsScreen 1.0 AllAppsScreen.qml
+MediaScreen 1.0 MediaScreen.qml
+Keyboard 1.0 Keyboard.qml
+Ambient 1.0 Ambient.qml
+Guide 1.0 Guide.qml
+Backdrop 1.0 Backdrop.qml
+ScreenHeader 1.0 ScreenHeader.qml
+AssistantPanel 1.0 AssistantPanel.qml
+OmarchyMenuScreen 1.0 OmarchyMenuScreen.qml
+AddAppScreen 1.0 AddAppScreen.qml
+Tutorial 1.0 Tutorial.qml

@@ -1,0 +1,376 @@
+{
+  "_comment": "Omarchy TV apps. Override or add entries in ~/.config/omarchy-tv/apps.json (same shape; an entry with the same id replaces this one, \"hidden\": true removes it). Types: web, native, terminal (a TUI in a fullscreen terminal), steam, vibes, media (built in), desktop (from the app launcher), builtin (a TV screen). 'needs' hides an entry unless every command in it is installed. 'input' is remote (keys) or gamepad (the app reads controllers itself). 'freeze' pauses the app completely while it is in the background.",
+  "rows": [
+    {
+      "id": "watch",
+      "title": "Watch"
+    },
+    {
+      "id": "listen",
+      "title": "Listen"
+    },
+    {
+      "id": "play",
+      "title": "Play"
+    },
+    {
+      "id": "apps",
+      "title": "Apps"
+    },
+    {
+      "id": "system",
+      "title": "System"
+    }
+  ],
+  "apps": [
+    {
+      "id": "youtube",
+      "name": "YouTube",
+      "row": "watch",
+      "type": "web",
+      "url": "https://www.youtube.com/tv",
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64; SMART-TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Cobalt/24.lts.40.1032783-gold (unlike Gecko) v8/8.8.278.17-jit gles Starboard/15",
+      "glyph": "",
+      "colors": [
+        "#ff1a1a",
+        "#b30000"
+      ],
+      "blurb": "The TV app, made for the remote"
+    },
+    {
+      "id": "netflix",
+      "name": "Netflix",
+      "row": "watch",
+      "type": "web",
+      "drm": true,
+      "url": "https://www.netflix.com/browse",
+      "glyph": "󰝆",
+      "colors": [
+        "#e50914",
+        "#5c0307"
+      ],
+      "blurb": "Needs Google Chrome for DRM"
+    },
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "row": "watch",
+      "type": "native",
+      "needs": [
+        "jellyfin-desktop"
+      ],
+      "exec": [
+        "jellyfin-desktop",
+        "--tv",
+        "--fullscreen"
+      ],
+      "glyph": "󰐌",
+      "colors": [
+        "#aa5cc3",
+        "#00a4dc"
+      ],
+      "blurb": "Your own media server, in TV mode"
+    },
+    {
+      "id": "jellyfin_mp",
+      "name": "Jellyfin",
+      "row": "watch",
+      "type": "native",
+      "needs": [
+        "jellyfinmediaplayer"
+      ],
+      "exec": [
+        "jellyfinmediaplayer",
+        "--tv",
+        "--fullscreen"
+      ],
+      "glyph": "󰐌",
+      "colors": [
+        "#aa5cc3",
+        "#00a4dc"
+      ],
+      "blurb": "Your own media server, in TV mode"
+    },
+    {
+      "id": "kodi",
+      "name": "Kodi",
+      "row": "watch",
+      "type": "native",
+      "needs": [
+        "kodi"
+      ],
+      "exec": [
+        "kodi",
+        "--standalone"
+      ],
+      "glyph": "󰔂",
+      "colors": [
+        "#17b2e7",
+        "#0c5d79"
+      ],
+      "blurb": "The classic home theater"
+    },
+    {
+      "id": "twitch",
+      "name": "Twitch",
+      "row": "watch",
+      "type": "web",
+      "url": "https://www.twitch.tv",
+      "scale": 1.5,
+      "glyph": "",
+      "colors": [
+        "#9146ff",
+        "#3b1a7a"
+      ],
+      "blurb": "Live streams"
+    },
+    {
+      "id": "videos",
+      "name": "Videos",
+      "row": "watch",
+      "type": "media",
+      "folder": "~/Videos",
+      "glyph": "󰎁",
+      "colors": [
+        "#3a4250",
+        "#1c2129"
+      ],
+      "blurb": "Play files from ~/Videos with mpv"
+    },
+    {
+      "id": "cliamp",
+      "name": "cliamp",
+      "row": "listen",
+      "type": "terminal",
+      "needs": [
+        "cliamp",
+        "foot"
+      ],
+      "exec": [
+        "cliamp"
+      ],
+      "fontSize": 22,
+      "glyph": "󰝚",
+      "colors": [
+        "#d4a017",
+        "#3d2b00"
+      ],
+      "blurb": "Retro terminal music player: local files, radio, Spotify, YouTube Music"
+    },
+    {
+      "id": "spotify",
+      "name": "Spotify",
+      "row": "listen",
+      "type": "native",
+      "needs": [
+        "spotify"
+      ],
+      "exec": [
+        "spotify",
+        "--force-device-scale-factor=1.75"
+      ],
+      "glyph": "",
+      "colors": [
+        "#1ed760",
+        "#0d6b2f"
+      ],
+      "blurb": "Music and podcasts"
+    },
+    {
+      "id": "ytmusic",
+      "name": "YouTube Music",
+      "row": "listen",
+      "type": "web",
+      "url": "https://music.youtube.com",
+      "scale": 1.5,
+      "glyph": "󰝚",
+      "colors": [
+        "#ff3355",
+        "#7a0016"
+      ],
+      "blurb": "Music videos and playlists"
+    },
+    {
+      "id": "music",
+      "name": "Music",
+      "row": "listen",
+      "type": "media",
+      "folder": "~/Music",
+      "glyph": "󰝚",
+      "colors": [
+        "#4a3f5c",
+        "#221c2b"
+      ],
+      "blurb": "Play files from ~/Music"
+    },
+    {
+      "id": "steam",
+      "name": "Steam",
+      "row": "play",
+      "type": "steam",
+      "needs": [
+        "steam"
+      ],
+      "input": "gamepad",
+      "glyph": "",
+      "colors": [
+        "#2a475e",
+        "#0e1a26"
+      ],
+      "blurb": "Big Picture, made for controllers"
+    },
+    {
+      "id": "vibes",
+      "name": "Game Vibes",
+      "row": "play",
+      "type": "vibes",
+      "needs": [
+        "omarchy-games-vibes-launch"
+      ],
+      "freeze": true,
+      "glyph": "󰊗",
+      "colors": [
+        "accent",
+        "#13141c"
+      ],
+      "blurb": "Omarchy's games, in your theme"
+    },
+    {
+      "id": "assistant",
+      "name": "Ask",
+      "row": "system",
+      "type": "builtin",
+      "screen": "assistant",
+      "glyph": "󰚩",
+      "colors": [
+        "accent",
+        "#13141c"
+      ],
+      "blurb": "Ask your Omarchy agent, by voice or keyboard"
+    },
+    {
+      "id": "agent",
+      "name": "Agent",
+      "row": "system",
+      "type": "terminal",
+      "needs": [
+        "foot",
+        "omarchy-agent"
+      ],
+      "exec": [
+        "bash",
+        "-c",
+        "agent=$(omarchy-default-agent 2>/dev/null); command -v \"$agent\" >/dev/null || agent=$(\"$OMARCHY_TV_ROOT/bin/omarchy-tv-ask\" agent); cd ~; exec omarchy-agent --inline ${agent:+--agent \"$agent\"}"
+      ],
+      "glyph": "󰆍",
+      "colors": [
+        "#2b2f3a",
+        "#0d0f14"
+      ],
+      "blurb": "Your Omarchy coding agent, full screen (Settings › Assistant to swap)"
+    },
+    {
+      "id": "settings",
+      "name": "Settings",
+      "row": "system",
+      "type": "builtin",
+      "screen": "settings",
+      "glyph": "󰒓",
+      "colors": [
+        "#3b4252",
+        "#1d222b"
+      ],
+      "blurb": "Sound, Bluetooth, display, theme"
+    },
+    {
+      "id": "control",
+      "name": "Omarchy Control",
+      "row": "system",
+      "type": "native",
+      "needs": [
+        "omarchy-control"
+      ],
+      "exec": [
+        "omarchy-control",
+        "open"
+      ],
+      "scale": 1.5,
+      "input": "pointer",
+      "glyph": "󰒓",
+      "colors": [
+        "accent",
+        "#13141c"
+      ],
+      "blurb": "Every Omarchy setting, for the deep stuff"
+    },
+    {
+      "id": "install",
+      "name": "Install",
+      "row": "system",
+      "type": "builtin",
+      "screen": "omarchymenu",
+      "route": "install",
+      "glyph": "󰇚",
+      "colors": [
+        "#3b4252",
+        "#1d222b"
+      ],
+      "blurb": "Omarchy's install menu: apps, games, AI, services"
+    },
+    {
+      "id": "addapp",
+      "name": "Add to Home",
+      "row": "system",
+      "type": "builtin",
+      "screen": "addapp",
+      "glyph": "󰐕",
+      "colors": [
+        "#3b4252",
+        "#1d222b"
+      ],
+      "blurb": "Put any app, website or command on Home"
+    },
+    {
+      "id": "allapps",
+      "name": "All apps",
+      "row": "system",
+      "type": "builtin",
+      "screen": "allapps",
+      "glyph": "󰀻",
+      "colors": [
+        "#3b4252",
+        "#1d222b"
+      ],
+      "blurb": "Everything in the app launcher"
+    },
+    {
+      "id": "browser",
+      "name": "Browser",
+      "row": "system",
+      "type": "web",
+      "url": "https://duckduckgo.com",
+      "kiosk": false,
+      "scale": 1.5,
+      "input": "pointer",
+      "glyph": "󰖟",
+      "colors": [
+        "#3b4252",
+        "#1d222b"
+      ],
+      "blurb": "The open web (best with a mouse)"
+    },
+    {
+      "id": "power",
+      "name": "Power",
+      "row": "system",
+      "type": "builtin",
+      "screen": "power",
+      "glyph": "󰐥",
+      "colors": [
+        "#3b4252",
+        "#1d222b"
+      ],
+      "blurb": "Sleep, restart, leave the TV"
+    }
+  ]
+}

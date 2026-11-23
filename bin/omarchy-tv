@@ -1,0 +1,259 @@
+#!/bin/bash
+
+# omarchy-tv: start, stop and inspect the Omarchy TV (10-foot) session.
+#
+#   omarchy-tv [start]      Open the TV session, fullscreen on the desktop
+#   omarchy-tv stop         Close every TV app, then the session
+#   omarchy-tv status       Show whether it is running, and its apps
+#   omarchy-tv test         Start a hidden session (headless 1080p output)
+#   omarchy-tv shot FILE    Screenshot the session (works hidden too)
+#   omarchy-tv key KEY...   Send keys to the session (wtype -k names)
+#   omarchy-tv hyprctl ...  Run hyprctl against the TV compositor
+#   omarchy-tv autostart sync|status  Open at login / after sleep (TV Settings)
+#
+# The session runs as a nested Hyprland inside the desktop's Hyprland, in the
+# systemd slice omarchy-tv.slice, so `stop` can always take all of it down.
+
+set -euo pipefail
+
+root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
+runtime=${XDG_RUNTIME_DIR:-/run/user/$UID}
+
+mode=${1:-start}
+shift || true
+
+# `test` keeps its own state, unit and screenshots apart from a real session.
+if [[ $mode == test || ${OMARCHY_TV_TEST:-} == 1 ]]; then
+  export OMARCHY_TV_TEST=1
+  state="$runtime/omarchy-tv-test"
+  unit=omarchy-tv-test-session
+else
+  state="$runtime/omarchy-tv"
+  unit=omarchy-tv-session
+fi
+
+session_env() {
+  [[ -f $state/session.env ]] || return 1
+  # shellcheck disable=SC1091
+  source "$state/session.env"
+  [[ -S $runtime/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock ]]
+}
+
+running() {
+  systemctl --user --quiet is-active "$unit.scope" 2>/dev/null
+}
+
+tvctl() {
+  session_env || { echo "omarchy-tv: no session running" >&2; return 1; }
+  HYPRLAND_INSTANCE_SIGNATURE=$HYPRLAND_INSTANCE_SIGNATURE hyprctl "$@"
+}
+
+start_session() {
+  local headless=$1
+
+  if running && session_env; then
+    if [[ $headless == 0 && -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+      # Already open: bring it to the front.
+      hyprctl dispatch 'hl.dsp.focus({ window = "class:^aquamarine$" })' >/dev/null 2>&1 || true
+    fi
+    echo "omarchy-tv: already running"
+    return 0
+  fi
+
+  # A previous session that died hard may have left a desktop mapper paused.
+  if [[ -f $state/paused-mappers ]]; then
+    while read -r mapper; do [[ -n $mapper ]] && systemctl --user start "$mapper" 2>/dev/null; done <"$state/paused-mappers"
+  fi
+  rm -rf "$state"
+  mkdir -p "$state"
+  # The desktop's compositor, for undoing key passthrough from inside the TV.
+  printf '%s' "${HYPRLAND_INSTANCE_SIGNATURE:-}" >"$state/host.env"
+
+  local cmd
+  cmd="env OMARCHY_TV_ROOT=$(printf %q "$root") OMARCHY_TV_STATE=$(printf %q "$state") OMARCHY_TV_HEADLESS=$headless OMARCHY_TV_TEST=${OMARCHY_TV_TEST:-} OMARCHY_TV_DEMO=${OMARCHY_TV_DEMO:-}"
+  cmd+=" systemd-run --user --scope --quiet --collect --slice=omarchy-tv.slice --unit=$unit"
+  cmd+=" -p CPUWeight=200 -p IOWeight=200"
+  cmd+=" Hyprland -c $(printf %q "$root/hypr/hyprland.lua")"
+  cmd+=" >$(printf %q "$state/hyprland.log") 2>&1"
+
+  if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && command -v hyprctl >/dev/null; then
+    # Let the desktop's Hyprland place the window as it maps: fullscreen for a
+    # real session, parked on a hidden special workspace for tests.
+    local rules
+    if [[ $headless == 1 ]]; then
+      rules='{ workspace = "special:omarchy-tv-test silent", no_initial_focus = true }'
+    else
+      rules='{ fullscreen = true }'
+    fi
+    hyprctl dispatch "hl.dsp.exec_cmd($(jq -Rn --arg c "$cmd" '$c'), $rules)" >/dev/null
+  else
+    setsid bash -c "$cmd" &
+  fi
+
+  for _ in $(seq 1 100); do
+    session_env && break
+    sleep 0.1
+  done
+  session_env || { echo "omarchy-tv: session did not start; see $state/hyprland.log" >&2; return 1; }
+  [[ $headless == 0 ]] && host_passthrough on
+  echo "omarchy-tv: running (instance $HYPRLAND_INSTANCE_SIGNATURE, $WAYLAND_DISPLAY)"
+}
+
+# While the TV window has focus on the desktop, put the desktop's Hyprland in
+# a submap with no binds of its own, so every key (Super, volume, Home) reaches
+# the TV. Ctrl+Alt+Shift+F12 hands the keyboard back. The handler lives only
+# in the running compositor; a desktop config reload or `omarchy-tv stop`
+# removes it.
+host_passthrough() {
+  [[ -z ${OMARCHY_TV_TEST:-} && -f $state/host.env ]] || return 0
+  local host
+  host=$(<"$state/host.env")
+  [[ -n $host ]] || return 0
+  if [[ $1 == on ]]; then
+    HYPRLAND_INSTANCE_SIGNATURE=$host hyprctl eval '
+      if omarchy_tv_passthrough then omarchy_tv_passthrough:remove() end
+      hl.define_submap("omarchy-tv", function()
+        hl.bind("CTRL + ALT + SHIFT + F12", hl.dsp.submap("reset"))
+      end)
+      omarchy_tv_passthrough = hl.on("window.active", function(w)
+        if w and w.class == "aquamarine" then
+          if hl.get_current_submap() ~= "omarchy-tv" then hl.dispatch(hl.dsp.submap("omarchy-tv")) end
+        elseif hl.get_current_submap() == "omarchy-tv" then
+          hl.dispatch(hl.dsp.submap("reset"))
+        end
+      end)
+      local w = hl.get_active_window()
+      if w and w.class == "aquamarine" then hl.dispatch(hl.dsp.submap("omarchy-tv")) end' >/dev/null 2>&1 || true
+  else
+    HYPRLAND_INSTANCE_SIGNATURE=$host hyprctl eval '
+      if omarchy_tv_passthrough then omarchy_tv_passthrough:remove(); omarchy_tv_passthrough = nil end
+      if hl.get_current_submap() == "omarchy-tv" then hl.dispatch(hl.dsp.submap("reset")) end' >/dev/null 2>&1 || true
+  fi
+}
+
+stop_session() {
+  if ! running; then
+    # Left by itself (Ctrl+Alt+Shift+Esc, a crash): still tidy the desktop.
+    host_passthrough off
+    if [[ -f $state/paused-mappers ]]; then
+      while read -r mapper; do [[ -n $mapper ]] && systemctl --user start "$mapper" 2>/dev/null; done <"$state/paused-mappers"
+      rm -f "$state/paused-mappers"
+    fi
+    echo "omarchy-tv: not running"
+    return 0
+  fi
+  if session_env; then
+    HYPRLAND_INSTANCE_SIGNATURE=$HYPRLAND_INSTANCE_SIGNATURE OMARCHY_TV_STATE=$state \
+      timeout 15 "$root/bin/omarchy-tv-app" close-all || true
+    HYPRLAND_INSTANCE_SIGNATURE=$HYPRLAND_INSTANCE_SIGNATURE hyprctl dispatch 'hl.dsp.exit()' >/dev/null 2>&1 || true
+  fi
+  host_passthrough off
+  for _ in $(seq 1 30); do running || break; sleep 0.1; done
+  # Whatever is left in the slice (a stuck app, the gamepad bridge) goes too.
+  systemctl --user stop "$unit.scope" 2>/dev/null || true
+  [[ -n ${OMARCHY_TV_TEST:-} ]] || systemctl --user stop omarchy-tv.slice 2>/dev/null || true
+  # The gamepad bridge restarts desktop gamepad mappers it paused; if it was
+  # killed before it could, do it here.
+  if [[ -f $state/paused-mappers ]]; then
+    while read -r mapper; do
+      [[ -n $mapper ]] && systemctl --user start "$mapper" 2>/dev/null
+    done <"$state/paused-mappers"
+    rm -f "$state/paused-mappers"
+  fi
+  echo "omarchy-tv: stopped"
+}
+
+# Omarchy Control is the TV's advanced settings; the TV doesn't start without it.
+require_control() {
+  command -v omarchy-control >/dev/null && return 0
+  echo "omarchy-tv: Omarchy TV needs Omarchy Control. Install it with: omarchy pkg add omarchy-control" >&2
+  command -v omarchy-notification-send >/dev/null &&
+    omarchy-notification-send -u critical "Omarchy TV needs Omarchy Control" "Install it with: omarchy pkg add omarchy-control" 2>/dev/null
+  exit 1
+}
+
+# The user service that opens the TV at login and after sleep. Enabled only
+# while TV Settings has one of those on.
+autostart() {
+  local unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+  local unit=omarchy-tv-autostart.service
+  local settings=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-tv/settings.json
+  case ${1:-status} in
+  sync)
+    if jq -e '.startOnLogin == true or .startOnWake == true' "$settings" >/dev/null 2>&1; then
+      mkdir -p "$unit_dir"
+      cat >"$unit_dir/$unit" <<UNIT
+[Unit]
+Description=Open Omarchy TV at login and after sleep
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$root/bin/omarchy-tv-autostart
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+UNIT
+      systemctl --user daemon-reload
+      # Enabled for next login; started now for the wake watcher (it opens
+      # the TV for "login" only when it starts with the session).
+      systemctl --user enable "$unit" >/dev/null 2>&1
+      # Started from here mid-session: it should only watch for wakes now.
+      systemctl --user is-active --quiet "$unit" || { touch "$runtime/omarchy-tv-autostart.skip"; systemctl --user start "$unit"; }
+      echo "autostart: on"
+    else
+      systemctl --user disable --now "$unit" >/dev/null 2>&1
+      rm -f "$unit_dir/$unit"
+      systemctl --user daemon-reload
+      echo "autostart: off"
+    fi
+    ;;
+  status) systemctl --user is-enabled "$unit" 2>/dev/null || echo disabled ;;
+  esac
+}
+
+case $mode in
+autostart) autostart "${1:-status}" ;;
+start) require_control; start_session 0 ;;
+test) require_control; start_session 1 ;;
+stop) stop_session ;;
+restart) require_control; stop_session; start_session 0 ;;
+status)
+  if running && session_env; then
+    echo "running: $HYPRLAND_INSTANCE_SIGNATURE ($WAYLAND_DISPLAY)"
+    "$root/bin/omarchy-tv-app" list | sed 's/^/  app: /' || true
+  else
+    echo "not running"
+    exit 1
+  fi
+  ;;
+shot)
+  session_env || { echo "omarchy-tv: no session running" >&2; exit 1; }
+  out=${1:-$state/shot.png}
+  output=$(HYPRLAND_INSTANCE_SIGNATURE=$HYPRLAND_INSTANCE_SIGNATURE hyprctl monitors -j | jq -r 'map(select(.name == "TV-HEADLESS")) + . | .[0].name')
+  # An idle output renders no frames for screencopy to catch; a nudge of the
+  # (hidden) cursor gives it one.
+  (
+    sleep 0.15
+    HYPRLAND_INSTANCE_SIGNATURE=$HYPRLAND_INSTANCE_SIGNATURE hyprctl eval \
+      "hl.dispatch(hl.dsp.force_renderer_reload())" >/dev/null 2>&1
+  ) &
+  WAYLAND_DISPLAY=$WAYLAND_DISPLAY timeout 5 grim -o "$output" "$out"
+  echo "$out"
+  ;;
+key)
+  session_env || { echo "omarchy-tv: no session running" >&2; exit 1; }
+  for key in "$@"; do
+    WAYLAND_DISPLAY=$WAYLAND_DISPLAY wtype -k "$key"
+    sleep 0.15
+  done
+  ;;
+hyprctl) tvctl "$@" ;;
+-h | --help | help) sed -n '3,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+*)
+  echo "omarchy-tv: unknown command '$mode' (try --help)" >&2
+  exit 2
+  ;;
+esac

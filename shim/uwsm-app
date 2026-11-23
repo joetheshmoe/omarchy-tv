@@ -1,0 +1,14 @@
+#!/bin/bash
+# Omarchy TV shim: inside the TV, `uwsm-app -- cmd` runs cmd right here, in
+# the TV app's scope and on the TV's display. The real uwsm-app would start it
+# as a desktop service, on the desktop.
+while (($#)); do
+  case $1 in
+  --) shift; break ;;
+  -s | -t | -a | -u | -d) shift 2 ;;
+  -*) shift ;;
+  *) break ;;
+  esac
+done
+(($#)) || exit 0
+exec "$@"

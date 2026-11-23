@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Run the TV shell (Quickshell), and bring it back if it ever crashes, so the
+# remote is never left talking to nothing. Gives up after five quick crashes.
+
+root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
+state=${OMARCHY_TV_STATE:-${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-tv}
+mkdir -p "$state"
+
+# Qt: no client-side decorations, a fixed scale the shell multiplies itself,
+# and the basic render loop (one thread, fewer wakeups, steadier frame pacing).
+export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+export QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough
+export QSG_RENDER_LOOP=${QSG_RENDER_LOOP:-basic}
+export OMARCHY_TV_ROOT=$root OMARCHY_TV_STATE=$state
+
+crashes=0
+while true; do
+  started=$(date +%s)
+  qs -p "$root/shell" >>"$state/shell.log" 2>&1
+  status=$?
+  # A clean exit (session ending) stops here.
+  [[ $status -eq 0 ]] && exit 0
+  [[ -S ${XDG_RUNTIME_DIR}/hypr/${HYPRLAND_INSTANCE_SIGNATURE}/.socket.sock ]] || exit 0
+  if (($(date +%s) - started < 10)); then
+    crashes=$((crashes + 1))
+    ((crashes >= 5)) && { echo "shell keeps crashing; giving up" >>"$state/shell.log"; exit 1; }
+  else
+    crashes=0
+  fi
+  sleep 1
+done

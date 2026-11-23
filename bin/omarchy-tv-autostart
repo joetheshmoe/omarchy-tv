@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# omarchy-tv-autostart: open Omarchy TV, fullscreen, when you log in and/or
+# when the computer wakes from sleep, as set in TV Settings › Display (or the
+# first-run tutorial). Runs as the user service omarchy-tv-autostart.service,
+# which `omarchy-tv autostart sync` enables only while one of them is on.
+
+root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
+settings=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-tv/settings.json
+
+want() { jq -e --arg k "$1" '.[$k] == true' "$settings" >/dev/null 2>&1; }
+
+open_tv() {
+  # Give the desktop (and, after a wake, the displays) a moment first.
+  sleep "$1"
+  "$root/bin/omarchy-tv" start >/dev/null 2>&1
+}
+
+skip=${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-tv-autostart.skip
+if [[ -f $skip ]]; then
+  rm -f "$skip" # turned on from TV Settings, not a fresh login
+else
+  want startOnLogin && open_tv 3 &
+fi
+
+# logind says PrepareForSleep false as the machine comes back.
+gdbus monitor --system --dest org.freedesktop.login1 --object-path /org/freedesktop/login1 2>/dev/null |
+  while read -r line; do
+    if [[ $line == *PrepareForSleep* && $line == *false* ]]; then
+      want startOnWake && open_tv 2
+    fi
+  done

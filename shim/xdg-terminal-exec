@@ -1,0 +1,15 @@
+#!/bin/bash
+# Omarchy TV shim: terminals opened by anything in the TV (Omarchy's install
+# menu, TUIs, agents) open fullscreen in the TV, in a couch-sized font.
+args=()
+while (($#)); do
+  case $1 in
+  --app-id=* | --title=*) args+=("$1"); shift ;;
+  --app-id | --title) args+=("$1=$2"); shift 2 ;;
+  -e | --) shift; break ;;
+  -*) shift ;;
+  *) break ;;
+  esac
+done
+size=${OMARCHY_TV_TERM_SIZE:-20}
+exec foot -o "font=monospace:size=$size" -o "pad=40x30" "${args[@]}" "$@"

@@ -1,0 +1,40 @@
+{
+  "_comment": "Your own Omarchy TV apps. Same shape as apps/catalog.json in the Omarchy TV folder; this file reloads live. An entry with a built-in id overrides it, \"hidden\": true hides it. Delete the examples you don't want.",
+  "apps": [
+    {
+      "id": "jellyfin_web",
+      "name": "Jellyfin",
+      "row": "watch",
+      "type": "web",
+      "url": "http://localhost:8096",
+      "scale": 1.5,
+      "glyph": "󰐌",
+      "colors": ["#aa5cc3", "#00a4dc"],
+      "blurb": "Your media server, in the browser",
+      "hidden": true
+    },
+    {
+      "id": "plex",
+      "name": "Plex",
+      "row": "watch",
+      "type": "web",
+      "url": "https://app.plex.tv/desktop",
+      "scale": 1.5,
+      "glyph": "󰚺",
+      "colors": ["#e5a00d", "#5c4005"],
+      "hidden": true
+    },
+    {
+      "id": "retroarch",
+      "name": "RetroArch",
+      "row": "play",
+      "type": "native",
+      "needs": ["retroarch"],
+      "exec": ["retroarch", "--fullscreen"],
+      "input": "gamepad",
+      "freeze": true,
+      "glyph": "󰊗",
+      "colors": ["#3b4252", "#101010"]
+    }
+  ]
+}

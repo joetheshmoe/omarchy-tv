@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "joetheshmoe.tv",
+  "name": "Omarchy TV",
+  "version": "0.1.0",
+  "author": "joetheshmoe",
+  "description": "Turn your Omarchy PC into a living-room console: a 10-foot, remote- and controller-first TV mode with streaming, music, games, voice and your Omarchy agent.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": { "displayName": "Omarchy TV", "description": "Open the TV mode", "category": "Media", "allowMultiple": false, "defaultSection": "right" }
+}

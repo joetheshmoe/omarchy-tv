@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Build the TV's small native helpers into ~/.cache/omarchy-tv, when missing
+# or older than their source. Run by omarchy-tv-shell on every start.
+
+set -euo pipefail
+root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
+out=${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-tv
+src="$root/helpers"
+mkdir -p "$out"
+
+if [[ ! -x $out/tv-ime || $src/tv-ime.c -nt $out/tv-ime || $src/input-method-unstable-v2.xml -nt $out/tv-ime ]]; then
+  command -v cc >/dev/null && command -v wayland-scanner >/dev/null || {
+    echo "omarchy-tv-build: needs a C compiler and wayland-scanner for the on-screen keyboard's auto popup" >&2
+    exit 1
+  }
+  wayland-scanner client-header "$src/input-method-unstable-v2.xml" "$out/input-method-unstable-v2-client.h"
+  wayland-scanner private-code "$src/input-method-unstable-v2.xml" "$out/input-method-unstable-v2-protocol.c"
+  cc -O2 -Wall -Wextra -I"$out" -o "$out/tv-ime.new" "$src/tv-ime.c" "$out/input-method-unstable-v2-protocol.c" \
+    $(pkg-config --cflags --libs wayland-client)
+  mv "$out/tv-ime.new" "$out/tv-ime"
+fi
+echo "$out"

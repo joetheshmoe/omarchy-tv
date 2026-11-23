@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""omarchy-tv-menu: Omarchy's own menu, readable by the TV.
+
+    omarchy-tv-menu list <route>     children of a route, as JSON
+    omarchy-tv-menu run <route>      run a route's action (inside the TV)
+
+Reads the same files as the Omarchy menu: the packaged
+$OMARCHY_PATH/default/omarchy/omarchy-menu.jsonc and your
+~/.config/omarchy/extensions/omarchy-menu.jsonc (which may override or add
+rows). Each row's `when`, `checked` and `disabled` conditions are evaluated
+like the menu does, in parallel. Rows that need one of the desktop shell's
+runtime providers are left out: the TV can't draw those.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+OMARCHY = os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")
+FILES = [
+    os.path.join(OMARCHY, "default/omarchy/omarchy-menu.jsonc"),
+    os.path.expanduser("~/.config/omarchy/extensions/omarchy-menu.jsonc"),
+]
+
+
+def strip_jsonc(text):
+    """Drop // and /* */ comments and trailing commas, leaving strings alone."""
+    out, i, n = [], 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        elif c in "}]":
+            # trailing comma before a closer
+            k = len(out) - 1
+            while k >= 0 and out[k] in " \t\r\n":
+                k -= 1
+            if k >= 0 and out[k] == ",":
+                del out[k]
+            out.append(c)
+            i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def load():
+    menu = {}
+    for path in FILES:
+        try:
+            with open(path) as f:
+                data = json.loads(strip_jsonc(f.read()))
+        except (OSError, ValueError):
+            continue
+        for key, value in data.items():
+            if isinstance(value, dict):
+                menu[key] = {**menu.get(key, {}), **value}
+    return menu
+
+
+def conditions(rows):
+    """Run every row's shell conditions at once; returns {(route, field): bool}."""
+    procs = {}
+    for route, row in rows:
+        for field in ("when", "checked", "disabled"):
+            cmd = row.get(field)
+            if isinstance(cmd, str) and cmd.strip():
+                procs[(route, field)] = subprocess.Popen(
+                    ["bash", "-c", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    results = {}
+    for key, p in procs.items():
+        try:
+            results[key] = p.wait(timeout=5) == 0
+        except subprocess.TimeoutExpired:
+            p.kill()
+            results[key] = False
+    return results
+
+
+def children(menu, route):
+    prefix = route + "." if route else ""
+    depth = prefix.count(".")
+    rows = [(k, v) for k, v in menu.items()
+            if k.startswith(prefix) and k.count(".") == depth and k != route]
+    rows = [(k, v) for k, v in rows if not v.get("provider")]
+    cond = conditions(rows)
+    out = []
+    for key, row in rows:
+        if cond.get((key, "when")) is False:
+            continue
+        target = row.get("target")
+        has_children = any(k.startswith(key + ".") for k in menu) or bool(target)
+        out.append({
+            "route": target or key,
+            "label": row.get("label", key.rsplit(".", 1)[-1]),
+            "icon": row.get("icon", ""),
+            "iconFont": row.get("iconFont", ""),
+            "description": row.get("description", ""),
+            "action": row.get("action", "") if not has_children else "",
+            "submenu": has_children and not row.get("action"),
+            "checked": cond.get((key, "checked"), False),
+            "disabled": cond.get((key, "disabled"), False),
+        })
+    return out
+
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] not in ("list", "run", "title"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    menu = load()
+    route = sys.argv[2]
+    if sys.argv[1] == "list":
+        print(json.dumps({"route": route, "title": menu.get(route, {}).get("title") or menu.get(route, {}).get("label", route),
+                          "items": children(menu, route)}))
+        return 0
+    if sys.argv[1] == "title":
+        print(menu.get(route, {}).get("label", route))
+        return 0
+    action = menu.get(route, {}).get("action")
+    if not action:
+        print(f"{route} has no action", file=sys.stderr)
+        return 1
+    os.execvp("bash", ["bash", "-c", action])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

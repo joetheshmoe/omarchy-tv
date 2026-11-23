@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# omarchy-tv-voice: talk to the TV, with Superwhisper doing the listening.
+#
+#   omarchy-tv-voice start    Start recording the microphone
+#   omarchy-tv-voice stop     Stop, transcribe with Superwhisper, print JSON:
+#                             {"text": "...", "warning": "..."}
+#   omarchy-tv-voice cancel   Stop and throw the recording away
+#   omarchy-tv-voice check    Is Superwhisper here and ready? (JSON)
+#
+# Recording is done here and handed to `superwhisper transcribe` without
+# --insert, so Superwhisper's own auto-paste never fires on the desktop and
+# none of its settings change. It still uses your Superwhisper mode, language
+# and vocabulary.
+
+set -uo pipefail
+
+state=${OMARCHY_TV_STATE:-${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-tv}
+mkdir -p "$state"
+wav="$state/voice.wav"
+pidfile="$state/voice.pid"
+
+json_error() { jq -cn --arg w "$1" '{text: "", warning: $w}'; }
+
+stop_recorder() {
+  [[ -f $pidfile ]] || return 1
+  local pid
+  pid=$(<"$pidfile")
+  rm -f "$pidfile"
+  kill -INT "$pid" 2>/dev/null || return 1
+  for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+  kill -KILL "$pid" 2>/dev/null || true
+  return 0
+}
+
+case ${1:-} in
+check)
+  if ! command -v superwhisper >/dev/null; then
+    jq -cn '{available: false, reason: "Superwhisper is not installed"}'
+  else
+    superwhisper status 2>/dev/null | jq -c '{available: true, ready: (.ready // false), phase: (.phase // "")}' ||
+      jq -cn '{available: true, ready: false}'
+  fi
+  ;;
+start)
+  stop_recorder || true
+  command -v pw-record >/dev/null || { json_error "pw-record is missing (pipewire)"; exit 1; }
+  rm -f "$wav"
+  # 16 kHz mono is what speech models eat; no resampling later.
+  setsid pw-record --rate 16000 --channels 1 --format s16 "$wav" >/dev/null 2>&1 &
+  echo $! >"$pidfile"
+  jq -cn '{recording: true}'
+  ;;
+cancel)
+  stop_recorder || true
+  rm -f "$wav"
+  jq -cn '{cancelled: true}'
+  ;;
+stop)
+  stop_recorder || { json_error "Not recording"; exit 0; }
+  [[ -s $wav ]] || { json_error "Nothing was recorded"; exit 0; }
+  command -v superwhisper >/dev/null || { json_error "Superwhisper is not installed"; exit 0; }
+
+  sid=$(superwhisper transcribe "$wav" 2>/dev/null | jq -r '.session_id // empty')
+  [[ -n $sid ]] || { json_error "Superwhisper did not take the recording"; exit 0; }
+  # Transcription is asynchronous; the result lands in status.last.
+  for _ in $(seq 1 300); do
+    result=$(superwhisper status 2>/dev/null | jq -c --argjson sid "$sid" \
+      'select(.last.session_id == $sid and .phase == "idle") | {text: (.last.text // ""), warning: (.last.warning // "")}')
+    if [[ -n $result ]]; then
+      echo "$result"
+      rm -f "$wav"
+      exit 0
+    fi
+    sleep 0.1
+  done
+  json_error "Superwhisper took too long"
+  ;;
+*) sed -n '3,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

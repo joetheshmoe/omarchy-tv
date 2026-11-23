@@ -1,0 +1,338 @@
+#!/bin/bash
+
+# omarchy-tv-app: run and control TV apps, each in a systemd scope of its own.
+#
+#   omarchy-tv-app run JSON        Launch an app from its catalog entry
+#   omarchy-tv-app close ID        Ask it to close; kill it if it will not
+#   omarchy-tv-app kill ID         Kill it now (Force quit)
+#   omarchy-tv-app close-all       Close every TV app
+#   omarchy-tv-app fg ID | bg ID   Give it the CPU / step it back (and freeze it,
+#                                  when its entry says "freeze": true)
+#   omarchy-tv-app list            Running apps, one "id<TAB>unit" per line
+#
+# The scope is the container: one cgroup holding the app and everything it
+# forks, named omarchy-tv-app-<id>-<n>.scope. Closing kills the cgroup, so no
+# helper process is left behind; the compositor reads the scope name from
+# /proc to put the app's windows on their own fullscreen workspace. Web apps
+# also get a browser profile of their own, so logins stay with the TV and
+# never hand off to (or open in) the desktop's browser.
+
+set -uo pipefail
+
+root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
+state=${OMARCHY_TV_STATE:-${XDG_RUNTIME_DIR:-/run/user/$UID}/omarchy-tv}
+data=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-tv
+log="$state/apps.log"
+mkdir -p "$state/apps" "$data/profiles"
+
+fail() {
+  # Exit 3 with a one-line reason the shell shows as a toast.
+  echo "$*" >&2
+  echo "$(date +%T) $*" >>"$log"
+  exit 3
+}
+
+# Each launch records the app's root pid. Some apps move themselves into a
+# scope of their own once started (Chromium's browser process does), so an
+# app's units are its omarchy-tv-app-* scopes plus wherever that pid is now.
+root_pid() {
+  local f="$state/apps/$1.pid" p
+  [[ -f $f ]] || return 1
+  p=$(<"$f")
+  if [[ -n $p && -d /proc/$p ]]; then echo "$p"; else rm -f "$f"; return 1; fi
+}
+
+unit_of_pid() {
+  sed -n 's|^0::.*/\([^/]*\.scope\)$|\1|p' "/proc/$1/cgroup" 2>/dev/null
+}
+
+units_for() {
+  {
+    systemctl --user list-units --type=scope --state=active --plain --no-legend \
+      "omarchy-tv-app-$1-*.scope" 2>/dev/null | awk '{print $1}'
+    local p u
+    if p=$(root_pid "$1"); then
+      u=$(unit_of_pid "$p")
+      [[ -n $u && $u != *-session.scope ]] && echo "$u"
+    fi
+  } | sort -u
+}
+
+all_ids() {
+  {
+    systemctl --user list-units --type=scope --state=active --plain --no-legend \
+      'omarchy-tv-app-*.scope' 2>/dev/null | awk '{print $1}' | sed -E 's/^omarchy-tv-app-([a-z0-9_]+)-.*/\1/'
+    for f in "$state"/apps/*.pid; do
+      [[ -f $f ]] || continue
+      id=${f##*/}
+      root_pid "${id%.pid}" >/dev/null && echo "${id%.pid}"
+    done
+  } | sort -u
+}
+
+windows_for() {
+  hyprctl clients -j 2>/dev/null | jq -r --arg ws "tv-$1" '.[] | select(.workspace.name == $ws) | .address'
+}
+
+first_present() {
+  for candidate in "$@"; do
+    command -v "$candidate" >/dev/null 2>&1 && { echo "$candidate"; return 0; }
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# run
+# ---------------------------------------------------------------------------
+run_app() {
+  local json=$1
+  local id type name
+  id=$(jq -r '.id // empty' <<<"$json")
+  type=$(jq -r '.type // "native"' <<<"$json")
+  name=$(jq -r '.name // .id' <<<"$json")
+  [[ $id =~ ^[a-z0-9_]+$ ]] || fail "Bad app id '$id'"
+
+  if [[ -n $(units_for "$id") ]]; then
+    if [[ $type == media ]]; then
+      # A new file replaces whatever the player was playing.
+      for unit in $(units_for "$id"); do systemctl --user stop "$unit" 2>/dev/null; done
+    else
+      # Already running: the shell focuses its workspace; nothing to start.
+      exit 0
+    fi
+  fi
+
+  local -a cmd=()
+  local -a envs=()
+
+  case $type in
+  web | vibes)
+    local url browser profile ua scale
+    url=$(jq -r '.url // empty' <<<"$json")
+    if [[ $type == vibes ]]; then
+      url=$(omarchy-games-vibes-launch --url 2>/dev/null) || fail "Game Vibes is not available"
+    fi
+    [[ -n $url ]] || fail "$name has no URL"
+
+    browser=$(jq -r '.browser // empty' <<<"$json")
+    if [[ -z $browser ]]; then
+      if [[ $(jq -r '.drm // false' <<<"$json") == true ]]; then
+        # Netflix, Disney+ and friends need Widevine, which Chrome ships.
+        browser=$(first_present google-chrome-stable google-chrome brave chromium) || true
+      else
+        browser=$(first_present chromium google-chrome-stable google-chrome brave helium-browser) || true
+      fi
+    fi
+    [[ -n $browser ]] || fail "$name needs Chromium or Chrome (omarchy install browser chromium)"
+
+    profile=$(jq -r '.profile // .id' <<<"$json")
+    ua=$(jq -r '.userAgent // empty' <<<"$json")
+    scale=$(jq -r '.scale // empty' <<<"$json")
+
+    cmd=("$browser"
+      "--user-data-dir=$data/profiles/$profile"
+      --ozone-platform=wayland
+      --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiVideoDecoder,VaapiIgnoreDriverChecks
+      --disable-features=Translate,MediaRouter,GlobalMediaControls
+      --ignore-gpu-blocklist --enable-gpu-rasterization --enable-zero-copy
+      --no-first-run --no-default-browser-check --noerrdialogs
+      --disable-session-crashed-bubble --hide-crash-restore-bubble --disable-infobars
+      --password-store=basic
+      --autoplay-policy=no-user-gesture-required
+      --disable-pinch --overscroll-history-navigation=0
+      # Wayland text-input, so the TV's on-screen keyboard pops up for fields.
+      --enable-wayland-ime --wayland-text-input-version=3
+    )
+    [[ -n $ua ]] && cmd+=("--user-agent=$ua")
+    [[ -n $scale ]] && cmd+=("--force-device-scale-factor=$scale")
+    if [[ $(jq -r '.kiosk // true' <<<"$json") == true ]]; then
+      cmd+=(--kiosk "$url")
+    else
+      cmd+=(--start-fullscreen "--app=$url")
+    fi
+    ;;
+  steam)
+    command -v steam >/dev/null || fail "Steam is not installed (omarchy install gaming steam)"
+    # Steam allows one instance per user. If the desktop has it open, starting
+    # it here would only open Big Picture over there.
+    if pgrep -u "$UID" -x steam >/dev/null && [[ -z $(units_for "$id") ]]; then
+      fail "Steam is open on the desktop. Quit it there first."
+    fi
+    cmd=(steam -gamepadui)
+    envs+=(STEAM_FORCE_DESKTOPUI_SCALING=1.5)
+    ;;
+  terminal)
+    # A TUI, fullscreen in a couch-sized terminal (cliamp, agents, installers).
+    mapfile -t cmd < <(jq -r '.exec // [] | if type == "string" then [.] else . end | .[]' <<<"$json")
+    [[ ${#cmd[@]} -gt 0 ]] || fail "$name has nothing to run"
+    command -v foot >/dev/null || fail "$name needs the foot terminal"
+    [[ ${cmd[0]} == bash || ${cmd[0]} == sh ]] || command -v "${cmd[0]}" >/dev/null || fail "$name is not installed (${cmd[0]})"
+    local size
+    size=$(jq -r '.fontSize // empty' <<<"$json")
+    [[ -n $size ]] && envs+=("OMARCHY_TV_TERM_SIZE=$size")
+    cmd=("$root/shim/xdg-terminal-exec" "--app-id=omarchy-tv-$id" "--title=$name" "${cmd[@]}")
+    ;;
+  menu)
+    # A row of Omarchy's own menu (Install, Remove, ...). Its terminals and
+    # apps open in the TV through the shims.
+    local route
+    route=$(jq -r '.route // empty' <<<"$json")
+    [[ -n $route ]] || fail "No menu route"
+    cmd=("$root/bin/omarchy-tv-menu" run "$route")
+    ;;
+  media)
+    local file
+    file=$(jq -r '.file // empty' <<<"$json")
+    [[ -n $file ]] || fail "Nothing to play"
+    if [[ $(jq -r '.player // "mpv"' <<<"$json") == cliamp && $file =~ \.(mp3|flac|ogg|opus|m4a|wav|aac|alac|wma)$ ]] && command -v cliamp >/dev/null; then
+      cmd=("$root/shim/xdg-terminal-exec" "--app-id=omarchy-tv-$id" "--title=$name" cliamp "$file")
+    else
+    command -v mpv >/dev/null || fail "mpv is not installed"
+    cmd=(mpv --fs --force-window=immediate --keep-open=no --idle=no
+      --hwdec=auto-safe --vo=gpu-next
+      --save-position-on-quit
+      --input-conf="$root/config/mpv-input.conf"
+      --script-opts=osc-scalefullscreen=2.2,osc-layout=bottombar,osc-hidetimeout=1500
+      --osd-font-size=58 --sub-font-size=60
+      --title="$name"
+      -- "$file")
+    fi
+    ;;
+  native | desktop)
+    mapfile -t cmd < <(jq -r '.exec // [] | if type == "string" then [.] else . end | .[]' <<<"$json")
+    [[ ${#cmd[@]} -gt 0 ]] || fail "$name has nothing to run"
+    if [[ ${#cmd[@]} -eq 1 && ${cmd[0]} == *" "* ]]; then
+      cmd=(bash -c "${cmd[0]}")
+    fi
+    command -v "${cmd[0]}" >/dev/null || fail "$name is not installed (${cmd[0]})"
+    local s
+    s=$(jq -r '.scale // empty' <<<"$json")
+    if [[ -n $s ]]; then
+      # Desktop toolkits, made readable from the couch.
+      envs+=("QT_SCALE_FACTOR=$s" "GDK_DPI_SCALE=$s" "ELECTRON_FORCE_DEVICE_SCALE_FACTOR=$s")
+    fi
+    ;;
+  *) fail "Unknown app type '$type'" ;;
+  esac
+
+  # Per-app environment from the catalog.
+  while IFS= read -r kv; do
+    [[ -n $kv ]] && envs+=("$kv")
+  done < <(jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$json")
+
+  local -a props=(-p CPUWeight=100 -p IOWeight=100)
+  local mem
+  mem=$(jq -r '.memoryHigh // empty' <<<"$json")
+  [[ -n $mem ]] && props+=(-p "MemoryHigh=$mem")
+
+  local unit="omarchy-tv-app-$id-$(date +%s%N | tail -c 7)"
+  echo "$(date +%T) run $id: ${cmd[*]}" >>"$log"
+
+  # --scope keeps the caller's environment (this session's WAYLAND_DISPLAY),
+  # which a service unit would not.
+  # The desktop's fcitx settings would route typing around the TV's on-screen
+  # keyboard; apps here use Wayland text-input instead.
+  # The shims keep anything the app starts (terminals, uwsm-app) in the TV.
+  envs+=("PATH=$root/shim:$PATH")
+  setsid env -u QT_IM_MODULE -u GTK_IM_MODULE -u SDL_IM_MODULE -u XMODIFIERS "${envs[@]}" systemd-run --user --scope --quiet --collect \
+    --slice=omarchy-tv.slice --unit="$unit" "${props[@]}" \
+    -- "${cmd[@]}" >>"$log" 2>&1 </dev/null &
+  # setsid, env and systemd-run --scope all exec, so $! is the app itself.
+  local pid=$!
+  disown
+  echo "$pid" >"$state/apps/$id.pid"
+  # The compositor reads this to place windows whose app left its scope.
+  echo "$pid $id" >>"$state/pids"
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+# close / kill
+# ---------------------------------------------------------------------------
+wait_gone() {
+  local id=$1 tries=$2
+  for _ in $(seq 1 "$tries"); do
+    [[ -z $(units_for "$id") && -z $(windows_for "$id") ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+kill_app() {
+  local id=$1
+  local unit
+  for unit in $(units_for "$id"); do
+    systemctl --user thaw "$unit" 2>/dev/null || true
+    systemctl --user kill --signal=SIGKILL "$unit" 2>/dev/null || true
+  done
+  local p
+  p=$(root_pid "$id") && kill -KILL "$p" 2>/dev/null
+  rm -f "$state/apps/$id.pid"
+  # Windows not started by the TV (tv-other) only have a pid.
+  for address in $(windows_for "$id"); do
+    pid=$(hyprctl clients -j | jq -r --arg a "$address" '.[] | select(.address == $a) | .pid')
+    [[ -n $pid && $pid -gt 1 ]] && kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
+close_app() {
+  local id=$1
+  local unit
+
+  # A frozen app cannot answer a close request.
+  for unit in $(units_for "$id"); do systemctl --user thaw "$unit" 2>/dev/null || true; done
+
+  if [[ $id == steam ]] && pgrep -u "$UID" -x steam >/dev/null; then
+    steam -shutdown >/dev/null 2>&1 &
+    wait_gone "$id" 150 && return 0
+  fi
+
+  # 1. Ask nicely: close every window, so the app can save.
+  for address in $(windows_for "$id"); do
+    hyprctl dispatch "hl.dsp.window.close({ window = \"address:$address\" })" >/dev/null 2>&1 || true
+  done
+  wait_gone "$id" 40 && return 0
+
+  # 2. Windows are gone but helpers linger (or the app ignored us): SIGTERM.
+  for unit in $(units_for "$id"); do
+    systemctl --user kill --signal=SIGTERM "$unit" 2>/dev/null || true
+  done
+  wait_gone "$id" 30 && return 0
+
+  # 3. Gone, one way or the other.
+  kill_app "$id"
+}
+
+set_fg() {
+  local id=$1 fg=$2 freeze=${3:-false}
+  local unit
+  for unit in $(units_for "$id"); do
+    if [[ $fg == 1 ]]; then
+      systemctl --user thaw "$unit" 2>/dev/null || true
+      systemctl --user set-property --runtime "$unit" CPUWeight=100 IOWeight=100 2>/dev/null || true
+    else
+      systemctl --user set-property --runtime "$unit" CPUWeight=20 IOWeight=20 2>/dev/null || true
+      [[ $freeze == true ]] && systemctl --user freeze "$unit" 2>/dev/null || true
+    fi
+  done
+}
+
+cmd=${1:-}
+shift || true
+case $cmd in
+run) run_app "${1:?JSON required}" ;;
+close) close_app "${1:?app id required}" ;;
+kill) kill_app "${1:?app id required}" ;;
+close-all)
+  for id in $(all_ids); do close_app "$id" & done
+  wait
+  ;;
+fg) set_fg "${1:?app id required}" 1 ;;
+bg) set_fg "${1:?app id required}" 0 "${2:-false}" ;;
+list)
+  for id in $(all_ids); do
+    printf '%s\t%s\n' "$id" "$(units_for "$id" | paste -sd, -)"
+  done
+  ;;
+*) sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

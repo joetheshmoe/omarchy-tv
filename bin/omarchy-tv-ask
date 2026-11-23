@@ -1,0 +1,107 @@
+#!/bin/bash
+
+# omarchy-tv-ask: put a question to your Omarchy agent and print the answer.
+#
+#   omarchy-tv-ask agent          Which agent will answer (id, or nothing)
+#   omarchy-tv-ask agents         Omarchy's agent harnesses as JSON: installed?
+#                                 can answer on the TV? the Omarchy default?
+#   omarchy-tv-ask "question"     Answer on stdout (plain text)
+#
+# The agent is $OMARCHY_TV_AGENT when set (TV Settings > Assistant), else
+# Omarchy's default agent (`omarchy default agent`), when it can run headless;
+# otherwise the first installed one that can. It runs read-only in its own
+# scratch folder: it answers, it doesn't act. To change the TV it ends its
+# answer with a "TV:" line, which the TV checks against a short list of safe
+# commands before doing anything.
+
+set -uo pipefail
+
+root=${OMARCHY_TV_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}
+work=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-tv/assistant
+mkdir -p "$work"
+
+# Agents that can answer one question and exit (print mode).
+supported=(claude codex opencode crush copilot cursor-agent qwen gemini pi amp)
+
+headless() { printf '%s\n' "${supported[@]}" | grep -qx "$1"; }
+usable() { [[ -n $1 ]] && headless "$1" && command -v "$1" >/dev/null; }
+
+omarchy_default() {
+  command -v omarchy-default-agent >/dev/null && omarchy-default-agent 2>/dev/null
+}
+
+pick_agent() {
+  local wanted=${OMARCHY_TV_AGENT:-}
+  usable "$wanted" && { echo "$wanted"; return; }
+  local default
+  default=$(omarchy_default)
+  usable "$default" && { echo "$default"; return; }
+  for a in "${supported[@]}"; do
+    usable "$a" && { echo "$a"; return; }
+  done
+}
+
+agent=$(pick_agent)
+
+if [[ ${1:-} == agent ]]; then
+  echo "$agent"
+  exit 0
+fi
+
+if [[ ${1:-} == agents ]]; then
+  default=$(omarchy_default)
+  "$root/bin/omarchy-tv-menu" list agent.harness | jq -c '.items[] | {id: (.route | sub("^agent\\.harness\\."; "")), label, icon, iconFont}' |
+    while read -r row; do
+      id=$(jq -r .id <<<"$row")
+      installed=false; command -v "$id" >/dev/null && installed=true
+      canask=false; usable "$id" && canask=true
+      jq -c --argjson i "$installed" --argjson h "$canask" --arg d "$default" --arg a "$agent" \
+        '. + {installed: $i, headless: $h, default: (.id == $d), answering: (.id == $a)}' <<<"$row"
+    done | jq -sc .
+  exit 0
+fi
+
+[[ -n $agent ]] || { echo "No agent to ask. Install one with: omarchy install ai"; exit 3; }
+question=${1:?question required}
+apps=${OMARCHY_TV_APPS:-youtube netflix twitch spotify steam vibes}
+
+prompt="You are the voice assistant on Omarchy TV, a living-room TV running Omarchy Linux. \
+The viewer is on the couch, reading from across the room: answer in at most 90 words of plain \
+text, no markdown, no lists unless asked. Today is $(date '+%A %-d %B %Y, %H:%M').
+If the viewer wants the TV to do something, answer briefly and add a final line that is exactly one of:
+TV: open <app>          (apps: $apps)
+TV: youtube <search words>
+TV: close
+TV: home
+TV: volume <0-100>
+TV: settings
+Only add a TV line when they asked for that.
+
+Viewer: $question"
+
+cd "$work" || exit 1
+# Agents read stdin when it's open (Pi waits on it forever); give them none,
+# and never let one hang the TV.
+exec </dev/null
+t="timeout 120"
+case $agent in
+claude)
+  exec $t claude -p --output-format text --permission-mode plan "$prompt" 2>/dev/null
+  ;;
+codex)
+  out=$(mktemp)
+  $t codex exec --skip-git-repo-check --sandbox read-only -o "$out" "$prompt" >/dev/null 2>&1
+  status=$?
+  cat "$out"
+  rm -f "$out"
+  exit $status
+  ;;
+opencode) exec $t opencode run "$prompt" 2>/dev/null ;;
+crush) exec $t crush run "$prompt" 2>/dev/null ;;
+copilot) exec $t copilot -p "$prompt" 2>/dev/null ;;
+cursor-agent) exec $t cursor-agent -p --output-format text "$prompt" 2>/dev/null ;;
+qwen) exec $t qwen -p "$prompt" 2>/dev/null ;;
+gemini) exec $t gemini -p "$prompt" 2>/dev/null ;;
+pi) exec $t pi -p --no-session --no-tools "$prompt" 2>/dev/null ;;
+amp) exec $t amp -x "$prompt" 2>/dev/null ;;
+esac

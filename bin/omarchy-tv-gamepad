@@ -1,0 +1,501 @@
+#!/usr/bin/env python3
+"""omarchy-tv-gamepad: drive the TV with any game controller.
+
+Reads every gamepad (evdev, read-only, never grabbed) and acts as a TV remote
+through a virtual keyboard, plus a virtual mouse for apps that need one:
+
+  D-pad / left stick   arrows (key repeat)      A / Cross     OK (Enter)
+  B / Circle           Back (hold 0.8s: Home)   X / Square    Menu
+  Y / Triangle         play/pause               Start         Menu
+  Guide / PS           Home (hold: Assistant)   Select / View Mouse mode on/off
+  L3 (stick click)     On-screen keyboard       R3            hold to talk
+  LB / RB              page up / down           LT / RT       volume
+
+Mouse mode (on its own for apps marked "input": "pointer", or with Select):
+left stick moves the pointer, right stick scrolls, A clicks, X right-clicks.
+
+While an app that reads controllers itself is in front (Steam, games) only
+Guide is kept, so a game never sees doubled input. The shell says which mode
+applies in $OMARCHY_TV_STATE/input-mode (remote | pointer | gamepad).
+
+Desktop gamepad mappers (omarchy-gamepad.service) are paused for the session
+and started again when it ends, so presses are never doubled.
+
+No dependencies beyond Python: plain ioctls on /dev/input and /dev/uinput.
+"""
+
+import errno
+import fcntl
+import os
+import select
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import time
+
+STATE = os.environ.get("OMARCHY_TV_STATE") or os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "omarchy-tv")
+MODE_FILE = os.path.join(STATE, "input-mode")
+CTL_FIFO = os.path.join(STATE, "pointer.ctl")
+HIS = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
+SOCKET = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "hypr", HIS, ".socket.sock")
+
+# --- linux/input-event-codes.h ---------------------------------------------
+EV_SYN, EV_KEY, EV_REL, EV_ABS = 0x00, 0x01, 0x02, 0x03
+SYN_REPORT = 0
+ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ = 0x00, 0x01, 0x02, 0x03, 0x04, 0x05
+ABS_GAS, ABS_BRAKE, ABS_HAT0X, ABS_HAT0Y = 0x09, 0x0A, 0x10, 0x11
+REL_X, REL_Y, REL_HWHEEL, REL_WHEEL = 0x00, 0x01, 0x06, 0x08
+
+BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0x110, 0x111, 0x112
+BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST = 0x130, 0x131, 0x133, 0x134
+BTN_TL, BTN_TR, BTN_TL2, BTN_TR2 = 0x136, 0x137, 0x138, 0x139
+BTN_SELECT, BTN_START, BTN_MODE, BTN_THUMBL, BTN_THUMBR = 0x13A, 0x13B, 0x13C, 0x13D, 0x13E
+BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT = 0x220, 0x221, 0x222, 0x223
+BTN_GAMEPAD = BTN_SOUTH
+
+KEY_ESC, KEY_ENTER, KEY_SPACE = 1, 28, 57
+KEY_UP, KEY_PAGEUP, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_PAGEDOWN = 103, 104, 105, 106, 108, 109
+KEY_VOLUMEDOWN, KEY_VOLUMEUP, KEY_COMPOSE, KEY_BACK, KEY_HOMEPAGE = 114, 115, 127, 158, 172
+# F20-F23 are free on every keyboard; the TV compositor binds them:
+KEY_POINTER, KEY_KEYBOARD, KEY_TALK, KEY_ASSIST = 190, 191, 192, 193
+OUT_KEYS = [KEY_ESC, KEY_ENTER, KEY_SPACE, KEY_UP, KEY_PAGEUP, KEY_LEFT, KEY_RIGHT, KEY_DOWN,
+            KEY_PAGEDOWN, KEY_VOLUMEDOWN, KEY_VOLUMEUP, KEY_COMPOSE, KEY_BACK, KEY_HOMEPAGE,
+            KEY_POINTER, KEY_KEYBOARD, KEY_TALK, KEY_ASSIST]
+
+BUTTONS = {
+    BTN_SOUTH: KEY_ENTER, BTN_EAST: KEY_ESC, BTN_NORTH: KEY_COMPOSE, BTN_WEST: KEY_SPACE,
+    BTN_START: KEY_COMPOSE, BTN_SELECT: KEY_POINTER, BTN_MODE: KEY_HOMEPAGE,
+    BTN_THUMBL: KEY_KEYBOARD, BTN_THUMBR: KEY_TALK,
+    BTN_TL: KEY_PAGEUP, BTN_TR: KEY_PAGEDOWN, BTN_TL2: KEY_VOLUMEDOWN, BTN_TR2: KEY_VOLUMEUP,
+    BTN_DPAD_UP: KEY_UP, BTN_DPAD_DOWN: KEY_DOWN, BTN_DPAD_LEFT: KEY_LEFT, BTN_DPAD_RIGHT: KEY_RIGHT,
+}
+# In mouse mode these buttons click instead.
+POINTER_BUTTONS = {BTN_SOUTH: BTN_LEFT, BTN_NORTH: BTN_RIGHT}
+# Kept even while a controller-native app has the pad.
+ALWAYS = {KEY_HOMEPAGE, KEY_ASSIST}
+
+REPEATING = {KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_VOLUMEUP, KEY_VOLUMEDOWN}
+# Calm enough for a couch: a held direction waits, then steps ~8 times a second.
+REPEAT_DELAY, REPEAT_RATE = 0.45, 0.12
+LONG_PRESS = 0.8
+# Two pads (or Steam's virtual copy of one) pressing the same key within this
+# window count as one press.
+DEDUPE = 0.08
+# Pointer feel: deadzone, top speed (px per 1/60 s), curve exponent.
+POINTER_DZ, POINTER_SPEED, POINTER_CURVE = 0.15, 24.0, 2.2
+SCROLL_DZ, SCROLL_RATE = 0.3, 0.09  # seconds between wheel notches at full tilt
+
+DESKTOP_MAPPERS = ["omarchy-gamepad.service"]
+
+# --- ioctls -------------------------------------------------------------------
+def _IOC(direction, typ, nr, size):
+    return (direction << 30) | (size << 16) | (ord(typ) << 8) | nr
+
+_IOC_WRITE, _IOC_READ = 1, 2
+def EVIOCGBIT(ev, length): return _IOC(_IOC_READ, "E", 0x20 + ev, length)
+def EVIOCGNAME(length): return _IOC(_IOC_READ, "E", 0x06, length)
+def EVIOCGABS(axis): return _IOC(_IOC_READ, "E", 0x40 + axis, 24)
+
+UI_SET_EVBIT = _IOC(_IOC_WRITE, "U", 100, 4)
+UI_SET_KEYBIT = _IOC(_IOC_WRITE, "U", 101, 4)
+UI_SET_RELBIT = _IOC(_IOC_WRITE, "U", 102, 4)
+UI_DEV_SETUP = _IOC(_IOC_WRITE, "U", 3, 92)
+UI_DEV_CREATE = _IOC(0, "U", 1, 0)
+UI_DEV_DESTROY = _IOC(0, "U", 2, 0)
+
+EVENT = struct.Struct("llHHi")
+OWN_NAMES = (b"Omarchy TV Remote", b"Omarchy TV Pointer")
+
+
+def bits(fd, ev, count):
+    buf = bytearray((count + 7) // 8)
+    try:
+        fcntl.ioctl(fd, EVIOCGBIT(ev, len(buf)), buf)
+    except OSError:
+        return set()
+    return {i for i in range(count) if buf[i // 8] & (1 << (i % 8))}
+
+
+class UInput:
+    def __init__(self, name, product, keys=(), rels=()):
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        if keys:
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
+            for k in keys:
+                fcntl.ioctl(self.fd, UI_SET_KEYBIT, k)
+        if rels:
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_REL)
+            for r in rels:
+                fcntl.ioctl(self.fd, UI_SET_RELBIT, r)
+        fcntl.ioctl(self.fd, UI_DEV_SETUP, struct.pack("HHHH80sI", 0x06, 0x1D6B, product, 1, name, 0))
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+
+    def send(self, *events):
+        now = time.time()
+        sec, usec = int(now), int((now % 1) * 1e6)
+        data = b"".join(EVENT.pack(sec, usec, t, c, v) for t, c, v in events)
+        os.write(self.fd, data + EVENT.pack(sec, usec, EV_SYN, SYN_REPORT, 0))
+
+    def close(self):
+        try:
+            fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        finally:
+            os.close(self.fd)
+
+
+class Pad:
+    def __init__(self, path, fd):
+        self.path, self.fd = path, fd
+        self.axes = {}
+        for axis in (ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_GAS, ABS_BRAKE):
+            buf = bytearray(24)
+            try:
+                fcntl.ioctl(fd, EVIOCGABS(axis), buf)
+                _, lo, hi, _, _, _ = struct.unpack("iiiiii", buf)
+                if hi > lo:
+                    self.axes[axis] = (lo, hi)
+            except OSError:
+                pass
+        self.raw = {}  # axis -> -1..1 (sticks) or 0..1 (triggers)
+        self.stick = {ABS_X: 0, ABS_Y: 0}
+        self.trigger = {}
+
+    def norm(self, code, value):
+        lo, hi = self.axes.get(code, (-32768, 32767))
+        return (value - lo) / max(1, hi - lo)
+
+
+def is_gamepad(fd):
+    keys = bits(fd, EV_KEY, 0x300)
+    return BTN_GAMEPAD in keys or BTN_DPAD_UP in keys
+
+
+class Bridge:
+    def __init__(self):
+        self.remote = UInput(b"Omarchy TV Remote", 0x0104, keys=OUT_KEYS)
+        self.pointer = UInput(b"Omarchy TV Pointer", 0x0105, keys=(BTN_LEFT, BTN_RIGHT, BTN_MIDDLE),
+                              rels=(REL_X, REL_Y, REL_WHEEL, REL_HWHEEL))
+        self.pads = {}
+        self.held = {}
+        self.last_press = {}
+        self.long = {}  # key -> (down time, long sent)
+        self.mode = "remote"
+        self.mode_checked = 0.0
+        self.last_scan = 0.0
+        self.frac = [0.0, 0.0]
+        self.next_scroll = 0.0
+        self.last_tick = time.monotonic()
+        self.ctl = self.open_ctl()
+
+    # -- control FIFO: the compositor's remote-keys mouse mode writes here ------
+    def open_ctl(self):
+        try:
+            if os.path.exists(CTL_FIFO) and not stat.S_ISFIFO(os.stat(CTL_FIFO).st_mode):
+                os.unlink(CTL_FIFO)
+            if not os.path.exists(CTL_FIFO):
+                os.mkfifo(CTL_FIFO, 0o600)
+            fd = os.open(CTL_FIFO, os.O_RDONLY | os.O_NONBLOCK)
+            self._ctl_keepalive = os.open(CTL_FIFO, os.O_WRONLY | os.O_NONBLOCK)  # no EOF spin
+            return fd
+        except OSError:
+            return None
+
+    def read_ctl(self):
+        try:
+            data = os.read(self.ctl, 4096).decode(errors="ignore")
+        except OSError:
+            return
+        for line in data.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            try:
+                if parts[0] == "move" and len(parts) == 3:
+                    self.pointer.send((EV_REL, REL_X, int(parts[1])), (EV_REL, REL_Y, int(parts[2])))
+                elif parts[0] == "click":
+                    btn = {"left": BTN_LEFT, "right": BTN_RIGHT, "middle": BTN_MIDDLE}.get(parts[1] if len(parts) > 1 else "left", BTN_LEFT)
+                    self.pointer.send((EV_KEY, btn, 1))
+                    self.pointer.send((EV_KEY, btn, 0))
+                elif parts[0] == "scroll" and len(parts) == 2:
+                    self.pointer.send((EV_REL, REL_WHEEL, int(parts[1])))
+            except (ValueError, OSError):
+                pass
+
+    # -- devices -----------------------------------------------------------------
+    def scan(self):
+        self.last_scan = time.monotonic()
+        try:
+            names = [n for n in os.listdir("/dev/input") if n.startswith("event")]
+        except OSError:
+            return
+        for name in names:
+            path = "/dev/input/" + name
+            if path in self.pads:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except OSError:
+                continue
+            try:
+                buf = bytearray(256)
+                fcntl.ioctl(fd, EVIOCGNAME(len(buf)), buf)
+                label = bytes(buf).split(b"\0", 1)[0]
+                if any(n in label for n in OWN_NAMES) or not is_gamepad(fd):
+                    os.close(fd)
+                    continue
+            except OSError:
+                os.close(fd)
+                continue
+            self.pads[path] = Pad(path, fd)
+            print("gamepad:", path, label.decode(errors="replace"), flush=True)
+
+    def drop(self, pad):
+        self.pads.pop(pad.path, None)
+        try:
+            os.close(pad.fd)
+        except OSError:
+            pass
+        for key in list(self.held):
+            self.release(key)
+
+    # -- mode --------------------------------------------------------------------
+    def current_mode(self):
+        now = time.monotonic()
+        if now - self.mode_checked > 0.3:
+            self.mode_checked = now
+            try:
+                with open(MODE_FILE) as f:
+                    self.mode = f.read().strip() or "remote"
+            except OSError:
+                self.mode = "remote"
+        return self.mode
+
+    # -- keys --------------------------------------------------------------------
+    def press(self, key):
+        if key in self.held:
+            return
+        now = time.monotonic()
+        if now - self.last_press.get(key, 0) < DEDUPE:
+            return
+        self.last_press[key] = now
+        self.remote.send((EV_KEY, key, 1))
+        self.held[key] = now + REPEAT_DELAY if key in REPEATING else None
+
+    def release(self, key):
+        if key in self.held:
+            self.remote.send((EV_KEY, key, 0))
+            del self.held[key]
+
+    def tap(self, key):
+        self.remote.send((EV_KEY, key, 1))
+        self.remote.send((EV_KEY, key, 0))
+
+    def button(self, out, down, code=None):
+        mode = self.current_mode()
+        if mode == "gamepad" and out not in ALWAYS:
+            return
+        if mode == "pointer" and code in POINTER_BUTTONS:
+            self.pointer.send((EV_KEY, POINTER_BUTTONS[code], 1 if down else 0))
+            return
+        # Back and Guide: a tap does one thing, holding does another.
+        if out in (KEY_ESC, KEY_HOMEPAGE):
+            if down:
+                self.long[out] = [time.monotonic(), False]
+            elif out in self.long:
+                _, sent = self.long.pop(out)
+                if not sent:
+                    self.tap(out)
+            return
+        self.press(out) if down else self.release(out)
+
+    def axis(self, pad, code, value):
+        mode = self.current_mode()
+        if code in (ABS_HAT0X, ABS_HAT0Y):
+            neg, pos = (KEY_LEFT, KEY_RIGHT) if code == ABS_HAT0X else (KEY_UP, KEY_DOWN)
+            self.button(neg, value < 0)
+            self.button(pos, value > 0)
+            return
+        if code not in pad.axes:
+            return
+        n = pad.norm(code, value)
+        if code in (ABS_X, ABS_Y, ABS_RX, ABS_RY):
+            pad.raw[code] = n * 2 - 1
+        if code in (ABS_X, ABS_Y):
+            if mode == "pointer":
+                # The stick is the mouse now; let go of any arrow it held.
+                for axis in (ABS_X, ABS_Y):
+                    if pad.stick[axis]:
+                        pad.stick[axis] = 0
+                        for k in ((KEY_LEFT, KEY_RIGHT) if axis == ABS_X else (KEY_UP, KEY_DOWN)):
+                            self.release(k)
+                return
+            x, y = pad.raw.get(ABS_X, 0.0), pad.raw.get(ABS_Y, 0.0)
+            # Dominant axis only; engage at 70%, let go under 40%.
+            for axis, v, other in ((ABS_X, x, y), (ABS_Y, y, x)):
+                prev = pad.stick[axis]
+                mag = abs(v)
+                if prev == 0:
+                    now = (1 if v > 0 else -1) if mag > 0.7 and mag >= abs(other) else 0
+                else:
+                    now = prev if mag > 0.4 and (v > 0) == (prev > 0) else 0
+                if now != prev:
+                    pad.stick[axis] = now
+                    neg, pos = (KEY_LEFT, KEY_RIGHT) if axis == ABS_X else (KEY_UP, KEY_DOWN)
+                    self.button(neg, now < 0)
+                    self.button(pos, now > 0)
+        elif code in (ABS_Z, ABS_RZ, ABS_GAS, ABS_BRAKE):
+            was = pad.trigger.get(code, False)
+            pressed = n > (0.45 if was else 0.8)
+            if was != pressed:
+                pad.trigger[code] = pressed
+                self.button(KEY_VOLUMEDOWN if code in (ABS_Z, ABS_BRAKE) else KEY_VOLUMEUP, pressed)
+
+    def pointer_active(self):
+        if self.current_mode() != "pointer":
+            return False
+        for pad in self.pads.values():
+            for a in (ABS_X, ABS_Y):
+                if abs(pad.raw.get(a, 0.0)) > POINTER_DZ:
+                    return True
+            if abs(pad.raw.get(ABS_RY, 0.0)) > SCROLL_DZ or abs(pad.raw.get(ABS_RX, 0.0)) > SCROLL_DZ:
+                return True
+        return False
+
+    def tick(self):
+        now = time.monotonic()
+        dt = min(0.05, now - self.last_tick)
+        self.last_tick = now
+        for key, due in list(self.held.items()):
+            if due is not None and now >= due:
+                self.remote.send((EV_KEY, key, 2))
+                self.held[key] = now + REPEAT_RATE
+        for key, entry in list(self.long.items()):
+            if not entry[1] and now - entry[0] >= LONG_PRESS:
+                entry[1] = True
+                self.tap(KEY_HOMEPAGE if key == KEY_ESC else KEY_ASSIST)
+
+        if self.current_mode() == "pointer":
+            dx = dy = 0.0
+            wheel = hwheel = 0.0
+            for pad in self.pads.values():
+                for a, idx in ((ABS_X, 0), (ABS_Y, 1)):
+                    v = pad.raw.get(a, 0.0)
+                    m = abs(v)
+                    if m > POINTER_DZ:
+                        speed = ((m - POINTER_DZ) / (1 - POINTER_DZ)) ** POINTER_CURVE * POINTER_SPEED * dt * 60
+                        if idx == 0:
+                            dx += speed if v > 0 else -speed
+                        else:
+                            dy += speed if v > 0 else -speed
+                ry, rx = pad.raw.get(ABS_RY, 0.0), pad.raw.get(ABS_RX, 0.0)
+                if abs(ry) > SCROLL_DZ:
+                    wheel = -1 if ry > 0 else 1
+                if abs(rx) > SCROLL_DZ:
+                    hwheel = 1 if rx > 0 else -1
+            self.frac[0] += dx
+            self.frac[1] += dy
+            ix, iy = int(self.frac[0]), int(self.frac[1])
+            if ix or iy:
+                self.frac[0] -= ix
+                self.frac[1] -= iy
+                self.pointer.send((EV_REL, REL_X, ix), (EV_REL, REL_Y, iy))
+            if (wheel or hwheel) and now >= self.next_scroll:
+                self.next_scroll = now + SCROLL_RATE
+                events = []
+                if wheel:
+                    events.append((EV_REL, REL_WHEEL, int(wheel)))
+                if hwheel:
+                    events.append((EV_REL, REL_HWHEEL, int(hwheel)))
+                self.pointer.send(*events)
+
+    def run(self):
+        self.scan()
+        while True:
+            if HIS and not os.path.exists(SOCKET):
+                return
+            busy = self.held or self.long or self.pointer_active()
+            timeout = 1 / 60 if busy else 2.0
+            fds = [p.fd for p in self.pads.values()]
+            if self.ctl is not None:
+                fds.append(self.ctl)
+            try:
+                ready, _, _ = select.select(fds, [], [], timeout)
+            except InterruptedError:
+                continue
+            if self.ctl is not None and self.ctl in ready:
+                self.read_ctl()
+            for pad in [p for p in self.pads.values() if p.fd in ready]:
+                try:
+                    data = os.read(pad.fd, EVENT.size * 64)
+                except OSError as e:
+                    if e.errno in (errno.ENODEV, errno.EIO, errno.EBADF):
+                        self.drop(pad)
+                    continue
+                for off in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                    _, _, typ, code, value = EVENT.unpack_from(data, off)
+                    if typ == EV_KEY and code in BUTTONS and value in (0, 1):
+                        self.button(BUTTONS[code], value == 1, code)
+                    elif typ == EV_ABS:
+                        self.axis(pad, code, value)
+            self.tick()
+            if time.monotonic() - self.last_scan > 2.0:
+                self.scan()
+
+
+def systemctl(*args):
+    try:
+        return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+
+
+def pause_desktop_mappers():
+    paused = []
+    for unit in DESKTOP_MAPPERS:
+        r = systemctl("is-active", "--quiet", unit)
+        if r is not None and r.returncode == 0:
+            systemctl("stop", unit)
+            paused.append(unit)
+            print("paused", unit, flush=True)
+    if paused:
+        with open(os.path.join(STATE, "paused-mappers"), "w") as f:
+            f.write("\n".join(paused) + "\n")
+    return paused
+
+
+def resume_desktop_mappers(paused):
+    for unit in paused:
+        systemctl("start", unit)
+        print("resumed", unit, flush=True)
+    try:
+        os.unlink(os.path.join(STATE, "paused-mappers"))
+    except OSError:
+        pass
+
+
+def main():
+    os.makedirs(STATE, exist_ok=True)
+    paused = pause_desktop_mappers()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))
+    try:
+        bridge = Bridge()
+    except OSError as e:
+        print(f"omarchy-tv-gamepad: cannot open /dev/uinput ({e.strerror}); controllers will not drive the TV", file=sys.stderr)
+        resume_desktop_mappers(paused)
+        return 1
+    try:
+        bridge.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bridge.remote.close()
+        bridge.pointer.close()
+        resume_desktop_mappers(paused)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
