@@ -88,6 +88,7 @@ Singleton {
           if (m) { tv = m[1]; lines.splice(i, 1); break }
         }
         root.answer = lines.join("\n").trim() || (tv ? "On it." : "No answer came back.")
+        Sfx.play("notify")
         root.action = tv
         if (tv) actTimer.restart()
       }

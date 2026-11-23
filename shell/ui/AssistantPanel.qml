@@ -27,9 +27,9 @@ FocusScope {
   }
 
   Keys.onPressed: function(e) {
-    if (e.key === Qt.Key_Left) { index = Math.max(0, index - 1); e.accepted = true }
-    else if (e.key === Qt.Key_Right) { index = Math.min(actions.length - 1, index + 1); e.accepted = true }
-    else if (Nav.isSelect(e)) { activate(actions[index].key); e.accepted = true }
+    if (e.key === Qt.Key_Left) { Sfx.play("move"); index = Math.max(0, index - 1); e.accepted = true }
+    else if (e.key === Qt.Key_Right) { Sfx.play("move"); index = Math.min(actions.length - 1, index + 1); e.accepted = true }
+    else if (Nav.isSelect(e)) { Sfx.play("select"); activate(actions[index].key); e.accepted = true }
     else if (Nav.isBack(e)) { if (Input.talking) Input.cancelTalking(); else Assistant.hide(); e.accepted = true }
     else if (e.text && /^[a-z0-9]$/i.test(e.text) && !(e.modifiers & Qt.ControlModifier)) {
       // A real keyboard just starts typing the question.

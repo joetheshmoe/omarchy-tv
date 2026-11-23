@@ -471,6 +471,11 @@ ShellRoot {
     function ask(question: string): void { Assistant.ask(question) }
     function assistant(): void { Assistant.show() }
     function talk(): void { Input.talkPressed() }
+    function sfx(): string {
+      var out = []
+      for (var k in Sfx.players) out.push(k + ":" + Sfx.players[k].status)
+      return Sfx.pack + " enabled=" + Sfx.enabled + " vol=" + Sfx.volume + " " + out.join(",")
+    }
     function focus(): string { return "toggles=" + tutorial.togglesFocused + " page=" + tutorial.page + " tut=" + tutorial.activeFocus + " tutVis=" + tutorial.visible + " content=" + content.activeFocus + " home=" + homeScreen.activeFocus + " contentItem=" + homeWindow.contentItem + " focusItem=" + (homeWindow.contentItem ? homeWindow.contentItem.activeFocus : "?") }
     function state(): string {
       return JSON.stringify({ home: Tv.homeShown, guide: Tv.guideShown, screen: Tv.screen, front: Tv.frontApp, focused: Tv.focusedApp, last: Tv.lastApp,

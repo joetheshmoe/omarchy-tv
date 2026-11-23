@@ -98,6 +98,8 @@ FocusScope {
       }
     }
 
+    onCurrentIndexChanged: if (activeFocus) Sfx.play("move")
+
     Keys.onPressed: function(e) {
       if (Nav.isSelect(e) && list.currentIndex >= 0) {
         var path = files.get(list.currentIndex, "filePath")

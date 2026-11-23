@@ -49,8 +49,8 @@ FocusScope {
   ]
 
   function reset() { page = 0; forceActiveFocus() }
-  function nextPage() { if (page < pages.length - 1) page++; else finished() }
-  function prevPage() { if (page > 0) page-- }
+  function nextPage() { if (page < pages.length - 1) { Sfx.play("move"); page++ } else { Sfx.play("select"); finished() } }
+  function prevPage() { if (page > 0) { Sfx.play("back"); page-- } }
 
   // The toggle list becomes visible with the page; focus it once it is.
   onPageChanged: if (pages[page].toggles) focusToggles.restart(); else tut.forceActiveFocus()

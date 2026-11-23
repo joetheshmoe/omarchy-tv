@@ -3,3 +3,4 @@ singleton Theme 1.0 Theme.qml
 singleton Tv 1.0 Tv.qml
 singleton Input 1.0 Input.qml
 singleton Assistant 1.0 Assistant.qml
+singleton Sfx 1.0 Sfx.qml

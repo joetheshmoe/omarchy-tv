@@ -63,6 +63,8 @@ FocusScope {
       lifted: row.liftedId === modelData.id
     }
 
+    onCurrentIndexChanged: if (activeFocus) Sfx.play("move")
+
     Keys.onPressed: function(e) {
       if (Nav.isSelect(e)) { row.activated(row.currentApp); e.accepted = true }
       else if (Nav.isMenu(e)) { row.menuRequested(row.currentApp); e.accepted = true }

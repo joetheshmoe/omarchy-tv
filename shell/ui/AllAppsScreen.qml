@@ -60,6 +60,8 @@ FocusScope {
       focused: GridView.isCurrentItem && grid.activeFocus
     }
 
+    onCurrentIndexChanged: if (activeFocus) Sfx.play("move")
+
     Keys.onPressed: function(e) {
       if (e.key === Qt.Key_Up && grid.currentIndex < Math.floor(grid.width / grid.cellWidth)) { all.startSearch(); e.accepted = true }
       else if (Nav.isSelect(e) && all.results[grid.currentIndex]) { Tv.open(all.results[grid.currentIndex]); e.accepted = true }

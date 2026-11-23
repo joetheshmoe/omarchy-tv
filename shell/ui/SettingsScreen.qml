@@ -61,12 +61,19 @@ FocusScope {
 
   function pct(v) { return Math.round(v * 100) + "%" }
 
+  // Hear the pack (or volume) you just picked, once the new sounds load.
+  Timer { id: sfxPreview; interval: 250; onTriggered: Sfx.play("select") }
+
   readonly property var detailItems: {
     var c = category
     var list = []
     if (c === "sound") {
       list.push({ key: "volume", kind: "slider", label: "Volume", level: Tv.volume, detail: Tv.muted ? "Muted" : pct(Tv.volume) })
       list.push({ key: "mute", kind: "toggle", label: "Mute", on: Tv.muted })
+      list.push({ kind: "header", label: "Interface sounds" })
+      list.push({ key: "sfxpack", kind: "choice", label: "Sound pack", value: Sfx.enabled ? Sfx.packLabel(Sfx.pack) : "Off",
+                  detail: "Your own: ~/.config/omarchy-tv/sounds/<name>/move.wav, select.wav, …" })
+      list.push({ key: "sfxvol", kind: "slider", label: "Interface volume", level: Sfx.volume, enabled: Sfx.enabled, detail: Math.round(Sfx.volume * 100) + "%" })
       list.push({ kind: "header", label: "Play sound on" })
       var sinks = Tv.sinks
       for (var i = 0; i < sinks.length; i++) {
@@ -224,6 +231,7 @@ FocusScope {
     case "pause": Tv.setSetting("pauseOnHome", !Tv.settings.pauseOnHome); break
     case "deskrow": Tv.setSetting("showDesktopRow", !Tv.settings.showDesktopRow); break
     case "music": adjust(item, 1); break
+    case "sfxpack": adjust(item, 1); break
     case "login": Tv.setSetting("startOnLogin", !item.on); Tv.syncAutostart(); break
     case "wake": Tv.setSetting("startOnWake", !item.on); Tv.syncAutostart(); break
     case "tutorial": Tv.showTutorial(); break
@@ -246,6 +254,13 @@ FocusScope {
 
   function adjust(item, step) {
     if (item.key === "volume") Tv.changeVolume(step * 0.05)
+    else if (item.key === "sfxpack") {
+      var all = ["off"].concat(Sfx.packs)
+      var i = all.indexOf(Sfx.enabled ? Sfx.pack : "off")
+      Tv.setSetting("sounds", all[(i + step + all.length) % all.length])
+      sfxPreview.restart()
+    }
+    else if (item.key === "sfxvol") { Tv.setSetting("soundVolume", Math.max(0, Math.min(1, Math.round((Sfx.volume + step * 0.1) * 10) / 10))); sfxPreview.restart() }
     else if (item.key === "zoom") Tv.setSetting("zoom", cycle([0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4], Tv.settings.zoom, step))
     else if (item.key === "safe") Tv.setSetting("safe", cycle([0, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08], Tv.settings.safe, step))
     else if (item.key === "music") Tv.setSetting("musicPlayer", Tv.settings.musicPlayer === "cliamp" ? "mpv" : "cliamp")

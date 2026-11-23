@@ -26,7 +26,7 @@ FocusScope {
   function step(dir) {
     var i = list.currentIndex + dir
     while (i >= 0 && i < items.length && !selectable(i)) i += dir
-    if (i >= 0 && i < items.length) list.currentIndex = i
+    if (i >= 0 && i < items.length) { if (i !== list.currentIndex) Sfx.play("move"); list.currentIndex = i }
   }
   onItemsChanged: if (!selectable(list.currentIndex)) { list.currentIndex = -1; step(1) }
 
@@ -51,9 +51,9 @@ FocusScope {
       else if (e.key === Qt.Key_PageDown) { for (var i = 0; i < 6; i++) menu.step(1); e.accepted = true }
       else if (e.key === Qt.Key_PageUp) { for (var j = 0; j < 6; j++) menu.step(-1); e.accepted = true }
       else if (it && (e.key === Qt.Key_Left || e.key === Qt.Key_Right) && (it.kind === "slider" || it.kind === "choice")) {
-        menu.adjust(it, e.key === Qt.Key_Right ? 1 : -1); e.accepted = true
+        Sfx.play("toggle"); menu.adjust(it, e.key === Qt.Key_Right ? 1 : -1); e.accepted = true
       }
-      else if (it && Nav.isSelect(e)) { menu.activated(it); e.accepted = true }
+      else if (it && Nav.isSelect(e)) { Sfx.play(it.kind === "toggle" ? "toggle" : "select"); menu.activated(it); e.accepted = true }
     }
 
     delegate: Item {

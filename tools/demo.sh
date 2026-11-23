@@ -20,7 +20,7 @@ cp "$settings" "$work/settings.json" 2>/dev/null || true
 trap 'cp "$work/settings.json" "$settings" 2>/dev/null; "$tv" stop >/dev/null 2>&1; rm -rf "$work"' EXIT
 
 # Fresh look for the recording: default layout, tutorial on.
-jq '.tutorialDone = false | .agent = "claude" | del(.layout)' "$work/settings.json" >"$settings" 2>/dev/null || echo '{}' >"$settings"
+jq '.tutorialDone = false | .agent = "claude" | .sounds = "retro" | .soundVolume = 0.7 | del(.layout)' "$work/settings.json" >"$settings" 2>/dev/null || echo '{}' >"$settings"
 
 "$tv" stop >/dev/null 2>&1
 "$tv" test >/dev/null || exit 1
@@ -31,16 +31,18 @@ ipc() { qs ipc --pid "$(pgrep -f "[q]s -p $root/shell" | head -1)" call tv "$@" 
 key() { for k in "$@"; do wtype -k "$k"; sleep "${GAP:-0.55}"; done; }
 global() { hyprctl dispatch "hl.dsp.global(\"omarchy-tv:$1\")" >/dev/null; }
 
-start=0
-caption() { echo "$(echo "$(date +%s.%N) - $start" | bc) $*" >>"$work/captions"; }
+# Everything is timed from the moment recording starts, so captions and the
+# interface sounds (logged by the shell in demo mode) land on the right frame.
+rec0=$(date +%s.%N)
+caption() { echo "$(echo "$(date +%s.%N) - $rec0" | bc) $*" >>"$work/captions"; }
 
 wf-recorder -o TV-HEADLESS --no-damage -r 30 -c libx264 -p crf=18 -p preset=veryfast -f "$work/raw.mp4" >/dev/null 2>&1 &
 rec=$!
 sleep 1.5
-start=$(date +%s.%N)
 
+sleep 2.5
 caption "Your PC, now a living-room console"
-sleep 3.5
+sleep 2
 key Right
 sleep 1.6
 key Menu # skip the rest of the tutorial
@@ -125,7 +127,8 @@ caption "Omarchy TV"
 sleep 3
 kill -INT "$rec"
 wait "$rec" 2>/dev/null
-[[ -n ${DEMO_KEEP:-} ]] && cp "$work/raw.mp4" "$work/captions" "$DEMO_KEEP/"
+cp "${XDG_RUNTIME_DIR}/omarchy-tv-test/sfx.log" "$work/sfx.log" 2>/dev/null || : >"$work/sfx.log"
+[[ -n ${DEMO_KEEP:-} ]] && { cp "$work/raw.mp4" "$work/captions" "$work/sfx.log" "$DEMO_KEEP/"; echo "$rec0" >"$DEMO_KEEP/rec0"; }
 
 # Captions: a bar along the bottom, Omarchy's font, the theme's colors.
 font=$(fc-match -f '%{file}' "monospace:bold")
@@ -144,11 +147,25 @@ for i in "${!lines[@]}"; do
   size=44; [[ $text == "Omarchy TV" ]] && size=96
   y="h-150"; [[ $text == "Omarchy TV" ]] && y="(h-text_h)/2"
   box="box=1:boxcolor=0x${bg}@0.88:boxborderw=28"
-  filters+=("drawtext=fontfile=$font:textfile=$work/cap$i.txt:fontsize=$size:fontcolor=0x${fg}:$box:x=(w-text_w)/2:y=$y:enable='between(t,$t,$next)'")
+  # Each caption fades in and out over a quarter second.
+  fade="alpha='if(lt(t,$t+0.25),(t-$t)/0.25,if(gt(t,$next-0.25),max(0,($next-t)/0.25),1))'"
+  filters+=("drawtext=fontfile=$font:textfile=$work/cap$i.txt:fontsize=$size:fontcolor=0x${fg}:$box:x=(w-text_w)/2:y=$y:$fade:enable='between(t,$t,$next)'")
 done
-# A thin accent line under the caption bar while one shows.
+# Opening title over the first seconds.
+printf 'OMARCHY TV' >"$work/title.txt"
+printf 'turn any PC into a living-room console' >"$work/subtitle.txt"
+titlefade="alpha='if(lt(t,0.3),t/0.3,if(gt(t,2.6),max(0,(3.0-t)/0.4),1))'"
+filters+=("drawbox=x=0:y=0:w=iw:h=ih:color=0x${bg}@0.82:t=fill:enable='lt(t,3.0)'")
+filters+=("drawtext=fontfile=$font:textfile=$work/title.txt:fontsize=140:fontcolor=0x${accent}:x=(w-text_w)/2:y=(h-text_h)/2-60:$titlefade:enable='lt(t,3.0)'")
+filters+=("drawtext=fontfile=$font:textfile=$work/subtitle.txt:fontsize=46:fontcolor=0x${fg}:x=(w-text_w)/2:y=(h)/2+70:$titlefade:enable='lt(t,3.0)'")
 vf=$(IFS=,; echo "${filters[*]}")
-ffmpeg -y -loglevel error -i "$work/raw.mp4" -vf "$vf" -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p -movflags +faststart "$out/demo.mp4"
+ffmpeg -y -loglevel error -i "$work/raw.mp4" -vf "$vf" -c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p "$work/video.mp4"
+
+# Soundtrack: original synthwave bed + the interface sounds + swooshes.
+duration=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$work/video.mp4")
+rec0_ms=$(echo "$rec0 * 1000" | bc)
+python3 -I "$root/tools/demo-audio.py" "$work/sfx.log" "$rec0_ms" "$work/captions" "$duration" "$work/audio.wav" "$root"
+ffmpeg -y -loglevel error -i "$work/video.mp4" -i "$work/audio.wav" -c:v copy -c:a aac -b:a 160k -shortest -movflags +faststart "$out/demo.mp4"
 # The README GIF: 1.6x speed, 720p, 10 fps, so it stays under ~10 MB.
 ffmpeg -y -loglevel error -i "$out/demo.mp4" -vf "setpts=PTS/1.6,fps=10,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" "$out/demo.gif"
 ls -la "$out/demo.mp4" "$out/demo.gif"

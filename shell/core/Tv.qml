@@ -40,6 +40,8 @@ Singleton {
     startOnLogin: false,
     startOnWake: false,
     tutorialDone: false,
+    sounds: "soft",
+    soundVolume: 0.6,
     layout: ({}),
     hidden: []
   })
@@ -429,6 +431,7 @@ Singleton {
   // ---------------------------------------------------------------- actions
   function open(app) {
     if (!app) return
+    Sfx.play(app.type === "builtin" || (app.type === "media" && !app.file) ? "select" : "open")
     if (app.type === "builtin" && app.screen === "assistant") { Assistant.show(); return }
     if (app.type === "builtin") { show(app.screen, app); return }
     if (app.type === "media" && !app.file) { show("media", { app: app, folder: app.folder }); return }
@@ -550,6 +553,7 @@ Singleton {
   }
 
   function back() {
+    if (ambient || launching || screen !== "home" || (lastApp && isRunning(lastApp))) Sfx.play("back")
     if (ambient) { ambient = false; return }
     if (launching) { cancelLaunch(); return }
     if (screen !== "home") { screen = "home"; return }
@@ -559,6 +563,7 @@ Singleton {
 
   function closeApp(id, force) {
     if (!id) return
+    Sfx.play("close")
     toast((force ? "Force quitting " : "Closing ") + appFor(id).name)
     if (lastApp === id) lastApp = ""
     if (frontApp === id || guideShown) goHome(true)
@@ -577,7 +582,7 @@ Singleton {
   function homeKey() {
     if (ambient) { ambient = false; return }
     if (guideShown) { goHome(); return }
-    if (!homeShown && frontApp) { guideShown = true; return }
+    if (!homeShown && frontApp) { Sfx.play("guide"); guideShown = true; return }
     if (screen !== "home") { screen = "home"; return }
     if (!homeShown) goHome()
   }
@@ -677,6 +682,7 @@ Singleton {
   // never draws an empty frame on the way out.
   property bool toastsVisible: false
   function toast(text, kind) {
+    Sfx.play(kind === "error" ? "error" : "notify")
     var t = { text: String(text), kind: kind || "info", at: Date.now() }
     toasts = toasts.concat([t]).slice(-3)
     toastsVisible = true

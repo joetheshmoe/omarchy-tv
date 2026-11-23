@@ -9,7 +9,7 @@ back, it's one button away.
 
 ![Omarchy TV demo](docs/demo.gif)
 
-<sub>Sped up 1.6×. Full-quality, real-time video: [docs/demo.mp4](docs/demo.mp4)</sub>
+<sub>Sped up 1.6×. **▶ Watch it with sound:** [docs/demo.mp4](docs/demo.mp4) (real time, original soundtrack)</sub>
 
 - **Console-grade navigation.** Big tiles, a guide button, and every app full screen. Works
   with any controller, TV remote, phone remote app or keyboard.
@@ -21,6 +21,8 @@ back, it's one button away.
   stick-driven mouse turns on for apps that need one.
 - **Unmistakably Omarchy.** Your theme, font and wallpaper, live. Omarchy's install menu,
   Omarchy Control and Game Vibes are all built in.
+- **Sounds like one too.** Snappy interface sounds in three packs (Soft, Retro, Glass), or
+  bring your own. Silence them any time.
 - **Boots like a console.** Optionally open straight into the TV at login and when the PC
   wakes from sleep.
 
@@ -213,6 +215,18 @@ the Omarchy-style launch-or-focus for running apps, and global shortcuts as in O
 own shell. Your Hyprland `input.lua` (keyboard layout) is reused. Nothing under
 `/usr/share/omarchy` is modified.
 
+## Interface sounds
+
+Moving, OK, Back, opening and closing apps, the guide, typing and notifications each have a
+short sound. *Settings › Sound › Sound pack* picks **Soft** (default), **Retro** (8-bit),
+**Glass**, or **Off**, and *Interface volume* sets how loud they are. Changing either plays a
+preview.
+
+All three packs are synthesized by `tools/make-sounds.py`, so there are no samples or
+licences involved. For your own pack, make `~/.config/omarchy-tv/sounds/<name>/` with any of
+`move.wav select.wav back.wav open.wav close.wav toggle.wav guide.wav type.wav error.wav
+notify.wav`. It appears in the list, and any sound you leave out falls back to Soft.
+
 ## Make it yours
 
 **Reorder everything.** Press Menu on any tile:
@@ -270,8 +284,12 @@ full screen at 1.5× with mouse mode on.
 
 ## Demo
 
-`tools/demo.sh` records the demo above: it drives a hidden session with scripted presses,
-records it with wf-recorder and captions it with ffmpeg.
+`tools/demo.sh` records the demo above. It drives a hidden session with scripted presses,
+records it with wf-recorder and captions it with ffmpeg. The soundtrack is built by
+`tools/demo-audio.py`: an original synthesized synthwave bed, plus every interface sound the
+TV played, placed at the moment it played (the shell logs them in demo mode), with swooshes
+on caption changes. The demo session itself is silent, and your desktop audio is never
+recorded.
 
 ## Testing without seeing it
 

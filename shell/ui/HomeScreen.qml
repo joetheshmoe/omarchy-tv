@@ -191,6 +191,8 @@ FocusScope {
       onMenuRequested: function(app) { home.openMenu(app) }
     }
 
+    onCurrentIndexChanged: if (activeFocus) Sfx.play("move")
+
     Keys.onPressed: function(e) {
       if (Nav.isBack(e)) { Tv.back(); e.accepted = true }
     }

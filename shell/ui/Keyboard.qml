@@ -64,6 +64,7 @@ FocusScope {
   function reset(initial) { text = initial || ""; row = 1; col = 0; shift = false; symbols = false; physical = !!initial; forceActiveFocus() }
 
   function press(key) {
+    Sfx.play(key.k === "done" || key.k === "enter" ? "select" : "type")
     if (key.k === "char") type(key.t)
     else if (key.k === "space") type(" ")
     else if (key.k === "delete") erase()
@@ -78,6 +79,7 @@ FocusScope {
   function erase() { text = text.slice(0, -1); if (live) edited(text) }
 
   function move(dr, dc) {
+    Sfx.play("move")
     row = Math.max(0, Math.min(keys.length - 1, row + dr))
     col = Math.max(0, Math.min(keys[row].length - 1, dr !== 0 ? Math.round(col * (keys[row].length - 1) / Math.max(1, keys[row - dr] ? keys[row - dr].length - 1 : 1)) : col + dc))
   }
